@@ -1,0 +1,19 @@
+# fly deploy -c infra/fly.worker.toml
+# The worker downloads and transcodes video, so it gets more memory than the API.
+app = "onigiri-worker"
+primary_region = "ams"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  ENVIRONMENT = "prod"
+  JOB_BACKEND = "arq"
+
+[processes]
+  worker = "arq onigiri.worker.WorkerSettings"
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "2gb"
+  processes = ["worker"]

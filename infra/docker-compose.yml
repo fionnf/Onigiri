@@ -1,0 +1,84 @@
+# Local stack: Postgres with pgvector, Redis, MinIO, the API and a worker.
+# `docker compose -f infra/docker-compose.yml up --build` from the repository root.
+
+name: onigiri
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: onigiri
+      POSTGRES_PASSWORD: onigiri
+      POSTGRES_DB: onigiri
+    ports: ["5432:5432"]
+    volumes: ["db-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U onigiri"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: onigiri
+      MINIO_ROOT_PASSWORD: onigiri-secret
+    ports: ["9000:9000", "9001:9001"]
+    volumes: ["minio-data:/data"]
+
+  createbucket:
+    image: minio/mc:latest
+    depends_on: [minio]
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 onigiri onigiri-secret; do sleep 1; done;
+      mc mb --ignore-existing local/onigiri;
+      exit 0;
+      "
+
+  api:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    environment: &app-env
+      ENVIRONMENT: dev
+      SECRET_KEY: ${SECRET_KEY:-local-dev-secret}
+      BASE_URL: http://localhost:8000
+      DATABASE_URL: postgresql+asyncpg://onigiri:onigiri@db:5432/onigiri
+      REDIS_URL: redis://redis:6379
+      JOB_BACKEND: arq
+      OWNER_EMAIL: ${OWNER_EMAIL:-you@example.com}
+      OWNER_PASSWORD: ${OWNER_PASSWORD:-changeme}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      APIFY_TOKEN: ${APIFY_TOKEN:-}
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_BUCKET: onigiri
+      S3_ACCESS_KEY_ID: onigiri
+      S3_SECRET_ACCESS_KEY: onigiri-secret
+    ports: ["8000:8000"]
+
+  worker:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    depends_on:
+      api: { condition: service_started }
+    environment: *app-env
+    command: ["arq", "onigiri.worker.WorkerSettings"]
+
+volumes:
+  db-data:
+  minio-data:

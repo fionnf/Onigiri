@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Onigiri">
+  <rect width="64" height="64" rx="14" fill="#0b0b0c"/>
+  <path d="M32 13c2.2 0 4.2 1.1 5.4 3l13.2 21.6c2.5 4.1-.4 9.4-5.4 9.4H18.8c-5 0-7.9-5.3-5.4-9.4L26.6 16c1.2-1.9 3.2-3 5.4-3z" fill="#fafafa"/>
+  <path d="M22 41h20v4a2 2 0 0 1-2 2H24a2 2 0 0 1-2-2z" fill="#0b0b0c"/>
+</svg>

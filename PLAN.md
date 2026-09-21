@@ -60,8 +60,12 @@ Every capture becomes an **ingest job** with visible stages (fetching → transc
 ### 2.4 Scaling and units
 
 - Change servings; all parsed quantities recalculate with sensible rounding and fraction display.
-- Toggle metric ⇄ US customary. Conversions per ingredient class (volume, weight, count) with a density table for common ingredients (flour, sugar, butter, water, oil) when converting between volume and weight.
-- Unparseable amounts ("a handful") are left untouched and shown as-is.
+- Toggle metric ⇄ US customary, per ingredient class.
+- Going metric, a bulk volume crosses to weight whenever the density table knows the
+  ingredient: two cups of flour become 250 g, not 473 ml. Spoon measures stay spoon
+  measures, because both systems use them. Counts never convert.
+- Unparseable amounts ("a handful") are left untouched and shown as-is, and seasoning
+  "to taste" or "for serving" is never multiplied.
 
 ### 2.5 Search, tags, collections
 
@@ -195,7 +199,8 @@ recipes          (id, user_id, source_id, title, title_original, language, descr
                   created_at, updated_at)
 ingredient_groups(id, recipe_id, name, order_idx)
 ingredients      (id, group_id, order_idx, raw text, quantity numeric, quantity_max numeric,
-                  unit, item, preparation, optional bool, unit_class ENUM(volume, weight, count, none))
+                  unit, item, preparation, optional bool, scalable bool,
+                  unit_class ENUM(volume, weight, count, length, none))
 steps            (id, recipe_id, order_idx, text, timer_seconds int[], ingredient_ids uuid[])
 equipment        (recipe_id, name)
 
@@ -205,6 +210,8 @@ collections      (id, user_id, name, order_idx)
 collection_items (collection_id, recipe_id, added_at)
 
 cook_log         (id, recipe_id, cooked_at, rating smallint, notes, servings_made)
+observations     (id, user_id, recipe_id, kind ENUM(edit, rating, note, cooked),
+                  text, created_at)   -- what the suggester reasons from
 profile_suggestions (id, user_id, text, evidence jsonb, status ENUM(open, accepted, dismissed))
 ```
 
@@ -254,42 +261,62 @@ GET    /media/{id}                 (signed R2 redirect)
 
 ## 8. Repository layout
 
+Built as two deployables from one image, rather than the four-package monorepo first
+sketched. A single Python package keeps the pipeline, API and worker sharing one set of
+models with no path dependencies to wire up.
+
 ```
-onigiri/
-  apps/
-    api/                 FastAPI app, routers, services, models, alembic/
-    worker/              arq worker, pipeline stages (fetch, transcribe, read, extract)
-    web/                 Vite React PWA
-  packages/
-    recipe_schema/       Pydantic models + JSON schema shared by API and worker
-    units/               unit table, conversions, density table, parser tests
-  infra/
-    Dockerfile.api  Dockerfile.worker  fly.api.toml  fly.worker.toml
-    docker-compose.yml (local: postgres+pgvector, redis, minio)
-  docs/                  this plan, ADRs, prompt templates
-  .github/workflows/     lint, typecheck, tests, build images
+server/
+  pyproject.toml
+  onigiri/
+    config.py          settings from the environment
+    db.py              async engine and session scope
+    models.py          the whole data model
+    units.py           unit table, ingredient parsing, conversion, timer detection
+    recipe_schema.py   the contract the model must return
+    schemas.py         HTTP request and response shapes
+    serializers.py     ORM to DTO
+    security.py        argon2 passwords, signed session cookie
+    main.py            the app; worker.py  the arq entry point
+    pipeline/          detect, fetch_web, fetch_instagram, fetch_video,
+                       media, vision, prompts, extract, run
+    routers/           auth, ingest, recipes, library, profile, media
+    services/          llm, search, scaling, storage, memory, jobs
+  alembic/             migrations
+  tests/               122 tests, against real Postgres and real ffmpeg
+web/
+  src/api/             typed client and types
+  src/lib/             hooks, formatters, share handoff
+  src/components/      shell, recipe card, icons, shared UI
+  src/routes/          library, add, job, recipe, edit, cook, profile, settings
+  src/sw.ts            service worker, including the share target
+infra/                 Dockerfile, docker-compose.yml, fly.api.toml, fly.worker.toml
+.github/workflows/     lint, types, migrations, tests, container build
 ```
 
-Tooling: `uv` for Python deps, `ruff` + `mypy`, `pytest` with a recorded-fixtures approach for external APIs (VCR-style), `pnpm` + `biome` + `vitest` + Playwright for the web app.
-
----
+Tooling: `uv` and `ruff` for Python, `pytest` with a stubbed model client, `pnpm`,
+`biome`, `vitest` and `tsc` for the web app.
 
 ## 9. Milestones
 
 Each milestone ends with something you can use.
 
-| # | Milestone | Outcome |
-|---|---|---|
-| M0 | Scaffold | Monorepo, Docker Compose, CI, login, empty library, deployed to Fly. |
-| M1 | Web + text capture | Paste a URL or text → structured recipe with source panel, edit, needs-review inbox. Extraction prompt + schema finalized. |
-| M2 | Instagram + video | Apify integration, yt-dlp, ffmpeg, transcription, keyframe OCR. Job timeline with `needs_input` fallback. |
-| M3 | Photos | Vision reading for cookbook pages, handwritten cards, screenshots; multi-image capture. |
-| M4 | PWA + cooking | Installable app, share target, offline recipe cache, cooking mode with timers and wake lock, scaling and unit toggle. |
-| M5 | Find things | Hybrid search, auto-tags, collections, filters, keyboard navigation. |
-| M6 | Memory | Taste profile, profile-aware extraction, cook log, profile suggestions from edits and ratings. |
-| M7 | Polish | Dark mode, export, usage counters, error states, Playwright smoke suite, backups. |
+All eight are built.
 
-Suggested order of effort: M0–M1 first since the extraction quality decides everything else; M2 is the riskiest external dependency and comes next.
+| # | Milestone | Delivered |
+|---|---|---|
+| M0 | Scaffold | Package, Compose, Dockerfile, Fly configs, CI, argon2 login, session cookie, migration that applies from scratch. |
+| M1 | Web + text capture | `recipe-scrapers` fast path that costs no model call, readable-text fallback, strict structured extraction, needs-review inbox. |
+| M2 | Instagram + video | Apify client, `yt-dlp`, ffmpeg audio and keyframes with perceptual-hash dedup, transcription, on-screen text, `needs_input` rescue. |
+| M3 | Photos | Vision reading for pages, handwritten cards and screenshots, with hard-to-read lines called out. |
+| M4 | PWA + cooking | Installable app, service-worker share target, cooking mode with wake lock and timers, scaling and unit conversion. |
+| M5 | Find things | Full text, trigram and vector retrieval fused by reciprocal rank, auto-tags with kinds, collections, filters, keyboard navigation. |
+| M6 | Memory | Taste profile injected into every prompt, allergy flags, cook log, observations, suggestions to accept or dismiss. |
+| M7 | Polish | Dark mode, Markdown and zip export, usage counters, error states, 122 server tests, browser-verified UI. |
+
+Two choices changed during the build, both recorded above: the repository layout in
+section 8, and the metric conversion rule in section 2.4, which now crosses bulk volumes
+to weight because "235 ml of flour" is not what a metric cook wants.
 
 ---
 
@@ -322,11 +349,12 @@ Suggested order of effort: M0–M1 first since the extraction quality decides ev
 
 ## 12. Open questions for implementation start
 
-None block M0. To confirm at M2:
+All three are now settings rather than open questions, so they can be changed without
+touching code:
 
-1. Apify actor choice: `apify/instagram-scraper` (broad) vs `apify/instagram-post-scraper` (cheaper per post).
-2. Whether to enable the `yt-dlp` Instagram fallback by default when Apify fails.
-
-To confirm at M6:
-
-3. How aggressive profile suggestions should be (after every edit vs weekly digest).
+1. `APIFY_INSTAGRAM_ACTOR` defaults to `apify~instagram-scraper`. Point it at
+   `apify~instagram-post-scraper` to trade breadth for a lower price per post.
+2. `YTDLP_INSTAGRAM_FALLBACK` defaults to false. Turn it on to let the open downloader
+   try when Apify fails, before the capture asks you to paste.
+3. Suggestions are generated on demand from the Profile screen, never automatically, and
+   need at least six observations before they will propose anything.
