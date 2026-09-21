@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     s3_public_base_url: str | None = None
     media_dir: str = "./.media"  # used when S3 is not configured
 
+    # Where the built web app lives. Set explicitly in the container image.
+    web_dist: str | None = None
+
     # --- OpenAI ---
     openai_api_key: str | None = None
     openai_base_url: str | None = None

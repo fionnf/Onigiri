@@ -4,8 +4,8 @@
 FROM node:22-slim AS web
 WORKDIR /web
 RUN corepack enable
-COPY web/package.json web/pnpm-lock.yaml* ./
-RUN pnpm install --frozen-lockfile || pnpm install
+COPY web/package.json web/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
 COPY web/ ./
 RUN pnpm build
 
@@ -20,13 +20,16 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# Dependencies first, from a stub package, so a source change does not reinstall them.
 COPY server/pyproject.toml ./server/pyproject.toml
 COPY server/onigiri/__init__.py ./server/onigiri/__init__.py
 RUN pip install --upgrade pip && pip install ./server
 
 COPY server/ ./server/
-RUN pip install --no-deps -e ./server
+RUN pip install --no-deps --force-reinstall ./server
 COPY --from=web /web/dist ./web/dist
+ENV WEB_DIST=/app/web/dist
 
 RUN useradd --create-home --uid 10001 onigiri && chown -R onigiri /app
 USER onigiri

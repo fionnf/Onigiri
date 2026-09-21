@@ -25,7 +25,11 @@ logging.basicConfig(
 )
 log = logging.getLogger("onigiri")
 
-WEB_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
+WEB_DIST = (
+    Path(settings.web_dist)
+    if settings.web_dist
+    else Path(__file__).resolve().parents[2] / "web" / "dist"
+)
 
 
 async def ensure_owner() -> None:
