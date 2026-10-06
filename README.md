@@ -57,7 +57,8 @@ createdb onigiri
 psql onigiri -c 'create extension if not exists vector; create extension if not exists pg_trgm;'
 
 # 2. Configuration
-cp .env.example .env     # set OWNER_EMAIL, OWNER_PASSWORD, OPENAI_API_KEY, APIFY_TOKEN
+cp .env.example .env     # in the repository root; set OWNER_EMAIL, OWNER_PASSWORD,
+                         # SECRET_KEY, OPENAI_API_KEY and APIFY_TOKEN
 
 # 3. Server
 cd server
@@ -77,8 +78,11 @@ serves at `/`. Then the whole app is on <http://localhost:8000>.
 Everything at once, including Redis and MinIO:
 
 ```bash
-docker compose -f infra/docker-compose.yml up --build
+docker compose --env-file .env -f infra/docker-compose.yml up --build
 ```
+
+The `--env-file` matters: without it Compose looks for `.env` next to the compose file in
+`infra/`, not in the repository root, and your keys are silently left out.
 
 ### Configuration
 
@@ -87,7 +91,8 @@ matter:
 
 | Variable | What it does |
 |---|---|
-| `OWNER_EMAIL`, `OWNER_PASSWORD` | The single account, created on first boot |
+| `OWNER_EMAIL`, `OWNER_PASSWORD` | The single account. Changing either and restarting takes effect; recipes are kept |
+| `SECRET_KEY` | Signs the session cookie. In production it must be at least 32 characters, and the app refuses to start with the example value |
 | `DATABASE_URL` | Postgres. A plain `postgres://` URL from a host is accepted |
 | `OPENAI_API_KEY` | Extraction, vision, transcription and embeddings |
 | `APIFY_TOKEN` | Instagram. Without it, Instagram captures ask you to paste instead |
@@ -126,6 +131,17 @@ easiest way to waste money here.
 
 ---
 
+### Where the keys go
+
+| Where it runs | Put the keys in |
+|---|---|
+| Your computer | `.env` in the repository root. It is git-ignored and overrides `server/.env` |
+| Docker Compose | The same root `.env`, passed with `--env-file .env` as above |
+| Fly | `fly secrets set OPENAI_API_KEY=… APIFY_TOKEN=… SECRET_KEY=… OWNER_PASSWORD=…`, once for `-a onigiri` and once for `-a onigiri-worker` |
+
+Generate a `SECRET_KEY` with `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
+The test suite blanks both API keys, so running the tests never spends money.
+
 ## Layout
 
 ```
@@ -139,7 +155,7 @@ server/            FastAPI app, worker and pipeline
     routers/         auth, ingest, recipes, library, profile, media
     services/        llm, search, scaling, storage, memory, jobs
   alembic/         migrations
-  tests/           122 tests
+  tests/           131 tests
 web/               React PWA
   src/routes/        library, add, job, recipe, edit, cook, profile, settings
   src/sw.ts          service worker, including the share target
@@ -149,7 +165,7 @@ infra/             Dockerfile, compose, Fly configs
 ## Tests
 
 ```bash
-cd server && .venv/bin/pytest          # 122 tests
+cd server && .venv/bin/pytest          # 131 tests
 cd web && pnpm test && pnpm build
 ```
 

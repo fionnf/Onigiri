@@ -20,8 +20,10 @@ os.environ["OWNER_EMAIL"] = "cook@test.local"
 os.environ["OWNER_PASSWORD"] = "test-password"
 os.environ["JOB_BACKEND"] = "inline"
 os.environ["MEDIA_DIR"] = "./.media-test"
-os.environ.pop("OPENAI_API_KEY", None)
-os.environ.pop("APIFY_TOKEN", None)
+# Environment variables outrank .env files, so blanking them here keeps a real key in the
+# developer's .env from ever being used, or billed, by the test suite.
+os.environ["OPENAI_API_KEY"] = ""
+os.environ["APIFY_TOKEN"] = ""
 
 import pytest  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402

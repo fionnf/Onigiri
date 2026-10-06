@@ -17,7 +17,7 @@ from onigiri.config import settings
 from onigiri.db import engine, session_scope
 from onigiri.models import Profile, User
 from onigiri.routers import auth, ingest, library, media, profile, recipes
-from onigiri.security import hash_password
+from onigiri.security import hash_password, verify_password
 
 logging.basicConfig(
     level=settings.log_level.upper(),
@@ -33,22 +33,53 @@ WEB_DIST = (
 
 
 async def ensure_owner() -> None:
-    """Create the single account from the environment on first boot."""
+    """Make the single account match the environment on every boot.
+
+    The environment is the source of truth: changing OWNER_PASSWORD or OWNER_EMAIL and
+    restarting takes effect, and renaming the email keeps the existing recipes instead
+    of starting an empty second account.
+    """
     email = settings.owner_email.strip().lower()
     async with session_scope() as db:
         user = await db.scalar(select(User).where(User.email == email))
         if user is None:
-            user = User(email=email, password_hash=hash_password(settings.owner_password))
-            db.add(user)
-            await db.flush()
+            others = list((await db.scalars(select(User).limit(2))).all())
+            if len(others) == 1:
+                user = others[0]
+                log.info("renaming the owner account from %s to %s", user.email, email)
+                user.email = email
+            else:
+                user = User(email=email, password_hash=hash_password(settings.owner_password))
+                db.add(user)
+                await db.flush()
+                log.info("created the owner account for %s", email)
+        if not verify_password(settings.owner_password, user.password_hash):
+            user.password_hash = hash_password(settings.owner_password)
+            log.info("owner password updated from the environment")
+        if not await db.scalar(select(Profile).where(Profile.user_id == user.id)):
             db.add(Profile(user_id=user.id))
-            log.info("created the owner account for %s", email)
-        elif not await db.scalar(select(Profile).where(Profile.user_id == user.id)):
-            db.add(Profile(user_id=user.id))
+
+
+INSECURE_SECRETS = {"dev-insecure-secret-change-me", "change-me-to-a-long-random-string"}
+INSECURE_PASSWORDS = {"changeme", "change-me", ""}
+
+
+def check_production_settings() -> None:
+    """Refuse to serve real traffic with the placeholder secrets from the examples."""
+    if settings.environment != "prod":
+        return
+    problems = []
+    if settings.secret_key in INSECURE_SECRETS or len(settings.secret_key) < 32:
+        problems.append("SECRET_KEY is a placeholder or shorter than 32 characters")
+    if settings.owner_password in INSECURE_PASSWORDS:
+        problems.append("OWNER_PASSWORD is still the example value")
+    if problems:
+        raise RuntimeError("Refusing to start: " + "; ".join(problems) + ".")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    check_production_settings()
     try:
         async with engine.begin() as conn:
             await conn.execute(text("select 1"))
