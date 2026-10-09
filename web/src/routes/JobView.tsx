@@ -1,8 +1,10 @@
 import { api } from "@/api/client";
-import { IconAlert, IconCamera, IconCheck, IconRefresh } from "@/components/Icons";
+import { IconAlert, IconCheck, IconRefresh } from "@/components/Icons";
+import { MediaPicker } from "@/components/MediaPicker";
 import { ErrorBox, Spinner } from "@/components/ui";
 import { stageLabel } from "@/lib/format";
 import { useJobStream } from "@/lib/hooks";
+import { prepareAll } from "@/lib/images";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -26,16 +28,24 @@ export function JobView() {
     }
   }, [job?.status, job?.recipe_id, navigate, queryClient]);
 
+  const [progress, setProgress] = useState<number | null>(null);
   const rescue = useMutation({
     mutationFn: async () => {
       if (!jobId) throw new Error("No capture");
-      if (files.length > 0) return api.jobInputFiles(jobId, files, paste.trim() || undefined);
+      if (files.length > 0) {
+        setProgress(0);
+        const ready = await prepareAll(files);
+        return api.jobInputFiles(jobId, ready, paste.trim() || undefined, (sent, total) =>
+          setProgress(sent / total),
+        );
+      }
       return api.jobInput(jobId, paste.trim());
     },
     onSuccess: () => {
       setPaste("");
       setFiles([]);
     },
+    onSettled: () => setProgress(null),
   });
 
   const retry = useMutation({
@@ -102,51 +112,30 @@ export function JobView() {
           </div>
 
           <textarea
-            className="field min-h-28 font-mono text-[13px]"
+            className="field min-h-28"
             placeholder="Paste the caption or the recipe text here…"
             value={paste}
             onChange={(event) => setPaste(event.target.value)}
           />
 
-          {files.length > 0 && (
-            <ul className="flex flex-wrap gap-2">
-              {files.map((file, index) => (
-                <li key={`${file.name}-${index}`} className="chip">
-                  {file.name.slice(0, 30)}
-                  <button
-                    type="button"
-                    onClick={() => setFiles(files.filter((_, i) => i !== index))}
-                    aria-label={`Remove ${file.name}`}
-                  >
-                    ×
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+          <MediaPicker
+            files={files}
+            onChange={setFiles}
+            chooseLabel="Add the video or a screenshot"
+          />
 
-          <div className="flex flex-wrap items-center gap-2">
-            <label className="btn btn-sm cursor-pointer">
-              <IconCamera className="h-3.5 w-3.5" />
-              Add the video or a screenshot
-              <input
-                type="file"
-                className="hidden"
-                multiple
-                accept="image/*,video/*"
-                onChange={(event) => setFiles([...files, ...Array.from(event.target.files ?? [])])}
-              />
-            </label>
-            <span className="flex-1" />
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              disabled={(!paste.trim() && files.length === 0) || rescue.isPending}
-              onClick={() => rescue.mutate()}
-            >
-              {rescue.isPending ? "Sending…" : "Continue"}
-            </button>
-          </div>
+          <button
+            type="button"
+            className="btn btn-primary w-full sm:ml-auto sm:flex sm:w-auto"
+            disabled={(!paste.trim() && files.length === 0) || rescue.isPending}
+            onClick={() => rescue.mutate()}
+          >
+            {rescue.isPending
+              ? progress !== null && progress < 1
+                ? `Uploading ${Math.round(progress * 100)}%`
+                : "Sending…"
+              : "Continue"}
+          </button>
           {rescue.isError && <ErrorBox error={rescue.error} />}
         </div>
       )}

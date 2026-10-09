@@ -220,3 +220,53 @@ async def test_every_new_caption_survives_deduplication(tmp_path: Path) -> None:
     )
     frames = await mediautil.extract_keyframes(clip, tmp_path / "frames", interval_s=1.0)
     assert len(frames) == len(captions)
+
+
+def test_iphone_heic_photos_are_converted_to_jpeg() -> None:
+    import io
+
+    from PIL import Image
+
+    original = Image.new("RGB", (4032, 3024), (200, 120, 60))
+    buf = io.BytesIO()
+    original.save(buf, format="HEIF")
+    heic = buf.getvalue()
+    assert heic[4:12] == b"ftypheic"
+
+    for_claude = mediautil.prepare_for_vision(heic, max_edge=1600)
+    assert for_claude[:2] == b"\xff\xd8"
+    assert max(mediautil.image_dimensions(for_claude)) == 1600
+
+    thumb, width, height = mediautil.make_thumbnail(heic, max_edge=800)
+    assert thumb[:2] == b"\xff\xd8"
+    assert (width, height) == (800, 600)
+
+
+def test_cover_frame_prefers_the_dish_over_a_dark_title_card(tmp_path: Path) -> None:
+    import random
+
+    from PIL import Image
+
+    random.seed(3)
+    frames = []
+    for i, kind in enumerate(["dish", "title", "title", "dark", "dish", "dark"]):
+        path = tmp_path / f"f{i}.jpg"
+        if kind == "dish":
+            img = Image.new("RGB", (120, 120))
+            img.putdata(
+                [
+                    (random.randint(120, 255), random.randint(40, 160), random.randint(0, 90))
+                    for _ in range(120 * 120)
+                ]
+            )
+        elif kind == "title":
+            img = Image.new("RGB", (120, 120), (58, 42, 30))
+        else:
+            img = Image.new("RGB", (120, 120), (5, 5, 5))
+        img.save(path)
+        frames.append(mediautil.Keyframe(index=i, timestamp=float(i), path=path))
+
+    cover = mediautil.pick_cover_frame(frames)
+    # The colourful frame in the second half, not the middle frame or a dark one.
+    assert cover is frames[4]
+    assert mediautil.pick_cover_frame([]) is None

@@ -123,6 +123,74 @@ body {
   }
 }
 
+/* ---------------------------------------------------------------- phones
+ * Touch screens get thumb-sized controls; the dense desktop layout is unchanged.
+ * Text fields are 16px because iOS Safari zooms the page into any smaller field. */
+@media (pointer: coarse) {
+  .btn {
+    min-height: 44px;
+    padding-inline: 0.875rem;
+    font-size: 0.9375rem;
+  }
+  .btn-sm {
+    min-height: 40px;
+    padding-inline: 0.75rem;
+    font-size: 0.875rem;
+  }
+  /* Height only for single-line fields; a textarea keeps the height it was given. */
+  input.field,
+  select.field {
+    min-height: 44px;
+  }
+  .field {
+    font-size: 16px;
+  }
+  .chip {
+    min-height: 34px;
+    padding-inline: 0.75rem;
+    font-size: 0.8125rem;
+  }
+  .kbd {
+    display: none;
+  }
+}
+
+/* Room for the notch and the home indicator when installed to the home screen. */
+.safe-top {
+  padding-top: env(safe-area-inset-top);
+}
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.safe-x {
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+/* A row of chips that scrolls sideways instead of wrapping into a wall. */
+.scroll-row {
+  display: flex;
+  gap: 0.375rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  scroll-snap-type: x proximity;
+}
+.scroll-row::-webkit-scrollbar {
+  display: none;
+}
+.scroll-row > * {
+  flex: none;
+  scroll-snap-align: start;
+}
+
+/* Tapping should not flash grey or zoom on double tap. */
+html {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  -webkit-text-size-adjust: 100%;
+}
+
 /* The cooking screen dims everything that is not the current step. */
 .cook-scroll {
   scrollbar-width: none;

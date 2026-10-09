@@ -46,6 +46,24 @@ step text and offers them as timers, and lets you tick ingredients off.
 
 ---
 
+## On your phone
+
+Onigiri is a web app you install to your home screen. It works like an app from there:
+full screen, its own icon, and recipes you have opened stay readable without signal.
+
+| | Install | Saving a recipe from Instagram |
+|---|---|---|
+| Android (Chrome) | Open the site, menu, **Install app** | Tap Share on the post and pick **Onigiri**. It saves without another tap |
+| iPhone (Safari) | Open the site, Share, **Add to Home Screen** | Tap Share, **Copy link**, open Onigiri, tap **Paste**, then **Save recipe**. iOS does not let web apps appear in the share menu |
+
+On either phone, **Take photo** on the Add screen opens the camera for a cookbook page or a
+handwritten card. Photos are shrunk on the phone before uploading, so a 12-megapixel
+picture goes up as a few hundred kilobytes, and iPhone HEIC photos are read like any other.
+
+Your hundred most recent recipes and their photos are kept on the phone and refreshed
+every few hours, so they open in a kitchen with no signal. Settings has a button to save
+them right away, and signing out deletes them from the phone.
+
 ## Running it locally
 
 You need Python 3.11+, Node 22, and Postgres 16 with the `vector` and `pg_trgm`
@@ -159,7 +177,7 @@ server/            FastAPI app, worker and pipeline
     routers/         auth, ingest, recipes, library, profile, media
     services/        llm, search, scaling, storage, memory, jobs
   alembic/         migrations
-  tests/           148 tests
+  tests/           150 tests, plus 5 phone tests in tests/e2e
 web/               React PWA
   src/routes/        library, add, job, recipe, edit, cook, profile, settings
   src/sw.ts          service worker, including the share target
@@ -169,7 +187,8 @@ infra/             Dockerfile, compose, Fly configs
 ## Tests
 
 ```bash
-cd server && .venv/bin/pytest          # 148 tests
+cd server && .venv/bin/pytest          # 150 tests
+cd server && E2E=1 .venv/bin/pytest tests/e2e   # 5 phone tests; build web/ first
 cd web && pnpm test && pnpm build
 ```
 
@@ -177,6 +196,11 @@ The server tests run against a real Postgres and real `ffmpeg`, with only the mo
 stubbed. They cover unit conversion and ingredient parsing, the whole capture pipeline for
 text, web, Instagram, video and photos, the rescue path when a fetch fails, search, tags,
 collections, scaling, the cook log and export.
+
+The phone tests start the real server, with only Claude stubbed, and drive a phone-sized
+Chromium through it: sharing into the app, taking and uploading a photo, opening saved
+recipes with the network off, signing out, and checking that no screen scrolls sideways,
+has a text box an iPhone would zoom into, or has a control too small to tap.
 
 ## Notes on cost and privacy
 

@@ -12,6 +12,13 @@ const queryClient = new QueryClient({
       staleTime: 30_000,
       refetchOnWindowFocus: false,
       retry: 1,
+      // "online" would pause every request while the phone reports no signal, and
+      // the service worker's saved copy would never be asked for.
+      networkMode: "offlineFirst",
+    },
+    mutations: {
+      // Fail at once with a clear message instead of waiting silently for signal.
+      networkMode: "always",
     },
   },
 });

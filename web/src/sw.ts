@@ -1,10 +1,78 @@
 /// <reference lib="webworker" />
-import { cleanupOutdatedCaches, precacheAndRoute } from "workbox-precaching";
+import { CacheableResponsePlugin } from "workbox-cacheable-response";
+import { ExpirationPlugin } from "workbox-expiration";
+import {
+  cleanupOutdatedCaches,
+  createHandlerBoundToURL,
+  precacheAndRoute,
+} from "workbox-precaching";
+import { NavigationRoute, registerRoute } from "workbox-routing";
+import { CacheFirst, NetworkFirst } from "workbox-strategies";
 
 declare const self: ServiceWorkerGlobalScope;
 
 cleanupOutdatedCaches();
 precacheAndRoute(self.__WB_MANIFEST);
+
+// ------------------------------------------------------------------ offline
+// The kitchen is where the signal drops. Every recipe opened, and every recipe
+// the app warms in the background, stays readable without a connection.
+
+// Any app route opens the app shell, so /r/<id> works offline after a reload.
+registerRoute(
+  new NavigationRoute(createHandlerBoundToURL("/index.html"), {
+    denylist: [/^\/api\//, /^\/share-target/],
+  }),
+);
+
+const READABLE_API = [
+  /^\/api\/auth\/me$/,
+  /^\/api\/recipes(\/[^/]+)?$/,
+  /^\/api\/recipes\/[^/]+\/scaled$/,
+  /^\/api\/(tags|collections|stats)$/,
+  /^\/api\/me\/profile$/,
+];
+
+// Fresh data when online, the last copy when not. Only same-origin GETs that
+// returned 200 are kept, so an error page never replaces a good copy.
+registerRoute(
+  ({ url, request, sameOrigin }) =>
+    sameOrigin && request.method === "GET" && READABLE_API.some((re) => re.test(url.pathname)),
+  new NetworkFirst({
+    cacheName: "onigiri-api",
+    networkTimeoutSeconds: 5,
+    plugins: [
+      new CacheableResponsePlugin({ statuses: [200] }),
+      new ExpirationPlugin({ maxEntries: 600, maxAgeSeconds: 60 * 60 * 24 * 90 }),
+    ],
+  }),
+);
+
+// Photos never change once stored, so they are served from the phone first.
+registerRoute(
+  ({ url, request, sameOrigin }) =>
+    sameOrigin && request.method === "GET" && url.pathname.startsWith("/api/media/"),
+  new CacheFirst({
+    cacheName: "onigiri-media",
+    plugins: [
+      new CacheableResponsePlugin({ statuses: [200] }),
+      new ExpirationPlugin({
+        maxEntries: 400,
+        maxAgeSeconds: 60 * 60 * 24 * 180,
+        purgeOnQuotaError: true,
+      }),
+    ],
+  }),
+);
+
+// Signing out must not leave the recipes readable on a shared device.
+self.addEventListener("message", (event) => {
+  if (event.data?.type === "signed-out") {
+    event.waitUntil(
+      Promise.all([caches.delete("onigiri-api"), caches.delete("onigiri-media")]).then(() => {}),
+    );
+  }
+});
 
 self.addEventListener("install", () => {
   void self.skipWaiting();

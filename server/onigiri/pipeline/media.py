@@ -20,6 +20,15 @@ from onigiri.config import settings
 
 log = logging.getLogger(__name__)
 
+try:
+    # iPhones save photos as HEIC. Registering the opener lets Pillow read them, so
+    # they are converted to JPEG for Claude and for thumbnails like any other photo.
+    from pillow_heif import register_heif_opener
+
+    register_heif_opener()
+except ImportError:  # pragma: no cover - optional at import, required in the image
+    log.warning("pillow-heif is not installed; HEIC photos cannot be read")
+
 
 class MediaToolMissing(RuntimeError):
     pass
@@ -222,6 +231,38 @@ async def extract_keyframes(
         if len(kept) >= max_frames:
             break
     return kept
+
+
+def _detail(path: Path) -> float:
+    """How much there is to see in a frame: spread of brightness plus colour."""
+    import numpy as np
+    from PIL import Image
+
+    with Image.open(path) as img:
+        small = np.asarray(img.convert("RGB").resize((96, 96)), dtype=np.float32)
+    grey = small.mean(axis=2)
+    colour = np.abs(small[..., 0] - small[..., 1]) + np.abs(small[..., 1] - small[..., 2])
+    return float(grey.std() + 0.5 * colour.mean())
+
+
+def pick_cover_frame(frames: list[Keyframe]) -> Keyframe | None:
+    """The frame to show in the library.
+
+    Reels usually end on the finished dish, so look in the second half, and take the
+    frame with the most going on rather than a dark transition or a title card.
+    """
+    if not frames:
+        return None
+    candidates = frames[len(frames) // 2 :] or frames
+    scored = []
+    for frame in candidates:
+        try:
+            scored.append((_detail(frame.path), frame.index, frame))
+        except Exception:  # an unreadable frame is simply not a candidate
+            continue
+    if not scored:
+        return candidates[-1]
+    return max(scored, key=lambda item: (item[0], item[1]))[2]
 
 
 def make_thumbnail(data: bytes, max_edge: int = 800, quality: int = 82) -> tuple[bytes, int, int]:

@@ -2,6 +2,7 @@ import { api } from "@/api/client";
 import { IconDownload, IconTrash } from "@/components/Icons";
 import { Confirm, ErrorBox, Spinner } from "@/components/ui";
 import { type Theme, useTheme } from "@/lib/hooks";
+import { clearOfflineCache, warmOfflineCache } from "@/lib/offline";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
@@ -43,7 +44,14 @@ export function Settings({ onSignedOut }: { onSignedOut: () => void }) {
     mutationFn: api.deleteTag,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["tags"] }),
   });
-  const signOut = useMutation({ mutationFn: api.logout, onSuccess: onSignedOut });
+  const saveOffline = useMutation({ mutationFn: () => warmOfflineCache(true) });
+  const signOut = useMutation({
+    mutationFn: async () => {
+      await api.logout();
+      await clearOfflineCache();
+    },
+    onSuccess: onSignedOut,
+  });
 
   const usage = stats.data?.usage_last_30_days;
 
@@ -151,7 +159,7 @@ export function Settings({ onSignedOut }: { onSignedOut: () => void }) {
               <span className="text-faint">{tag.count}</span>
               <button
                 type="button"
-                className="text-faint hover:text-danger"
+                className="-my-1 -mr-2 inline-flex h-8 w-8 items-center justify-center rounded-full text-base text-faint hover:text-danger"
                 onClick={() => {
                   if (window.confirm(`Delete the tag "${tag.name}" everywhere?`)) {
                     deleteTag.mutate(tag.id);
@@ -197,6 +205,27 @@ export function Settings({ onSignedOut }: { onSignedOut: () => void }) {
             ))}
           </tbody>
         </table>
+      </section>
+
+      <section className="card space-y-2 p-3">
+        <h2 className="label">On this phone</h2>
+        <p className="text-sm text-muted">
+          Your 100 most recent recipes and their photos are kept on this device, so they open in the
+          kitchen without signal. This refreshes on its own every few hours.
+        </p>
+        <button
+          type="button"
+          className="btn btn-sm w-fit"
+          onClick={() => saveOffline.mutate()}
+          disabled={saveOffline.isPending}
+        >
+          <IconDownload className="h-3.5 w-3.5" />
+          {saveOffline.isPending ? "Saving…" : "Save recipes for offline now"}
+        </button>
+        {saveOffline.isSuccess && (
+          <p className="text-xs text-muted">Saved {saveOffline.data} recipes on this phone.</p>
+        )}
+        {saveOffline.isError && <ErrorBox error={saveOffline.error} />}
       </section>
 
       <section className="card space-y-2 p-3">

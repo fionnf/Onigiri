@@ -11,7 +11,7 @@ import { ErrorBox, Spinner } from "@/components/ui";
 import { clock, durationLabel, prettyNumber } from "@/lib/format";
 import { useLocal, useShortcuts, useTimers, useWakeLock } from "@/lib/hooks";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 export function Cook() {
@@ -22,6 +22,7 @@ export function Cook() {
   const [units] = useLocal<"original" | "metric" | "us">("onigiri.units", "original");
   const { timers, start, stop, toggle } = useTimers();
   const awake = useWakeLock(true);
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
 
   const recipe = useQuery({
     queryKey: ["recipe", recipeId],
@@ -30,7 +31,8 @@ export function Cook() {
   });
   const scaled = useQuery({
     queryKey: ["scaled", recipeId, recipe.data?.servings ?? null, units],
-    queryFn: () => api.scaled(recipeId as string, undefined, units),
+    queryFn: () =>
+      api.scaled(recipeId as string, undefined, units === "original" ? undefined : units),
     enabled: Boolean(recipeId && recipe.data),
   });
 
@@ -66,8 +68,8 @@ export function Cook() {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-page">
-      <header className="flex items-center gap-2 border-b border-line px-3 py-2">
+    <div className="safe-x fixed inset-0 z-50 flex flex-col bg-page">
+      <header className="safe-top flex items-center gap-2 border-b border-line px-3 py-2">
         <button
           type="button"
           className="btn btn-ghost btn-sm"
@@ -119,7 +121,24 @@ export function Cook() {
         </div>
       )}
 
-      <div className="cook-scroll flex flex-1 flex-col overflow-y-auto px-4 py-6 sm:px-8">
+      <div
+        className="cook-scroll flex flex-1 flex-col overflow-y-auto px-4 py-6 sm:px-8"
+        onTouchStart={(event) => {
+          const t = event.touches[0];
+          touchStart.current = { x: t.clientX, y: t.clientY };
+        }}
+        onTouchEnd={(event) => {
+          const start = touchStart.current;
+          touchStart.current = null;
+          if (!start) return;
+          const t = event.changedTouches[0];
+          const dx = t.clientX - start.x;
+          const dy = t.clientY - start.y;
+          // A clear sideways swipe turns the page; anything else is a scroll.
+          if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+          setIndex((i) => (dx < 0 ? Math.min(i + 1, last) : Math.max(i - 1, 0)));
+        }}
+      >
         {steps.length === 0 ? (
           <p className="text-muted">This recipe has no method yet. Edit it to add the steps.</p>
         ) : (
@@ -150,13 +169,13 @@ export function Cook() {
                   <li key={ing.id}>
                     <button
                       type="button"
-                      className={`flex w-full items-baseline gap-2 rounded px-1 py-1 text-left hover:bg-surface ${
+                      className={`flex w-full items-baseline gap-3 rounded px-1 py-2.5 text-left text-[17px] hover:bg-surface ${
                         checked.has(ing.id) ? "text-faint line-through" : ""
                       }`}
                       onClick={() => toggleChecked(ing.id)}
                     >
                       <span
-                        className={`mt-1.5 h-3 w-3 shrink-0 rounded-sm border ${
+                        className={`mt-1 h-4 w-4 shrink-0 rounded border ${
                           checked.has(ing.id) ? "border-muted bg-muted" : "border-line"
                         }`}
                       />
@@ -176,7 +195,10 @@ export function Cook() {
         )}
       </div>
 
-      <footer className="flex items-center gap-2 border-t border-line px-3 py-3">
+      <footer
+        className="flex items-center gap-2 border-t border-line px-3 pt-3"
+        style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
+      >
         <button
           type="button"
           className="btn flex-1"

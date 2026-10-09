@@ -94,9 +94,56 @@ jobs:
         working-directory: web
         run: pnpm build
 
-  image:
+  phone:
+    # The app on a phone in a real browser: sharing, photo upload, offline, layout.
     runs-on: ubuntu-latest
     needs: [server, web]
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: onigiri
+          POSTGRES_PASSWORD: onigiri
+          POSTGRES_DB: onigiri_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U onigiri"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgresql+asyncpg://onigiri:onigiri@127.0.0.1:5432/onigiri_test
+      E2E: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Build the web app
+        working-directory: web
+        run: pnpm install --frozen-lockfile && pnpm build
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install the server and a browser
+        working-directory: server
+        run: |
+          uv python install 3.12
+          uv venv
+          uv pip install -e ".[dev]"
+          uv run playwright install --with-deps chromium
+      - name: Phone tests
+        working-directory: server
+        run: uv run pytest tests/e2e -q
+
+  image:
+    runs-on: ubuntu-latest
+    needs: [server, web, phone]
     steps:
       - uses: actions/checkout@v4
       - name: Build the container

@@ -21,17 +21,24 @@ export class ApiError extends Error {
   }
 }
 
+export const OFFLINE_MESSAGE = "You're offline. This needs a connection.";
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(path, {
-    credentials: "same-origin",
-    ...init,
-    headers: {
-      ...(init.body && !(init.body instanceof FormData)
-        ? { "Content-Type": "application/json" }
-        : {}),
-      ...init.headers,
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      credentials: "same-origin",
+      ...init,
+      headers: {
+        ...(init.body && !(init.body instanceof FormData)
+          ? { "Content-Type": "application/json" }
+          : {}),
+        ...init.headers,
+      },
+    });
+  } catch {
+    throw new ApiError(0, OFFLINE_MESSAGE);
+  }
 
   if (!response.ok) {
     let detail = response.statusText;
@@ -46,6 +53,49 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (response.status === 204) return undefined as T;
   const text = await response.text();
   return (text ? JSON.parse(text) : undefined) as T;
+}
+
+export type Progress = (sent: number, total: number) => void;
+
+/**
+ * POST a form with upload progress. fetch cannot report upload progress, and a
+ * phone sending a video over mobile data needs to show that something is moving.
+ */
+function uploadForm<T>(path: string, form: FormData, onProgress?: Progress): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", path);
+    xhr.withCredentials = true;
+    xhr.responseType = "text";
+    if (onProgress) {
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress(event.loaded, event.total);
+      };
+    }
+    xhr.onload = () => {
+      let body: unknown;
+      try {
+        body = xhr.responseText ? JSON.parse(xhr.responseText) : undefined;
+      } catch {
+        body = undefined;
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(body as T);
+        return;
+      }
+      const detail = (body as { detail?: unknown } | undefined)?.detail;
+      reject(
+        new ApiError(
+          xhr.status,
+          typeof detail === "string" ? detail : xhr.statusText || "Upload failed",
+        ),
+      );
+    };
+    xhr.onerror = () =>
+      reject(new ApiError(0, "The upload could not reach the server. Check your connection."));
+    xhr.ontimeout = () => reject(new ApiError(0, "The upload timed out."));
+    xhr.send(form);
+  });
 }
 
 const qs = (params: Record<string, unknown>): string => {
@@ -87,22 +137,26 @@ export const api = {
   // capture
   ingest: (payload: { url?: string; text?: string }) =>
     request<Job>("/api/ingest", { method: "POST", body: JSON.stringify(payload) }),
-  ingestFiles: (files: File[], extra: { url?: string; text?: string } = {}) => {
+  ingestFiles: (
+    files: File[],
+    extra: { url?: string; text?: string } = {},
+    onProgress?: Progress,
+  ) => {
     const form = new FormData();
     for (const file of files) form.append("files", file, file.name);
     if (extra.url) form.append("url", extra.url);
     if (extra.text) form.append("text", extra.text);
-    return request<Job>("/api/ingest/upload", { method: "POST", body: form });
+    return uploadForm<Job>("/api/ingest/upload", form, onProgress);
   },
   jobs: (activeOnly = false) => request<Job[]>(`/api/jobs${qs({ active_only: activeOnly })}`),
   job: (id: string) => request<Job>(`/api/jobs/${id}`),
   jobInput: (id: string, text: string) =>
     request<Job>(`/api/jobs/${id}/input`, { method: "POST", body: JSON.stringify({ text }) }),
-  jobInputFiles: (id: string, files: File[], text?: string) => {
+  jobInputFiles: (id: string, files: File[], text?: string, onProgress?: Progress) => {
     const form = new FormData();
     for (const file of files) form.append("files", file, file.name);
     if (text) form.append("text", text);
-    return request<Job>(`/api/jobs/${id}/input/upload`, { method: "POST", body: form });
+    return uploadForm<Job>(`/api/jobs/${id}/input/upload`, form, onProgress);
   },
   retryJob: (id: string) => request<Job>(`/api/jobs/${id}/retry`, { method: "POST" }),
   deleteJob: (id: string) => request<void>(`/api/jobs/${id}`, { method: "DELETE" }),

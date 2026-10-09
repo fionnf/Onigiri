@@ -1,20 +1,35 @@
 import { api } from "@/api/client";
-import { IconCamera, IconLink, IconPlus } from "@/components/Icons";
+import { IconLink } from "@/components/Icons";
+import { MediaPicker } from "@/components/MediaPicker";
 import { ErrorBox } from "@/components/ui";
 import { relativeDate, stageLabel } from "@/lib/format";
+import { prepareAll } from "@/lib/images";
 import { takeShared } from "@/lib/share";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
+const isTouch = () =>
+  typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches;
+
+const URL_ONLY = /^https?:\/\/\S+$/i;
+
+interface Payload {
+  text: string;
+  files: File[];
+}
+
 export function Add() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const [text, setText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [dragging, setDragging] = useState(false);
+  const [progress, setProgress] = useState<number | null>(null);
+  const [pasteHint, setPasteHint] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const sharedHandled = useRef(false);
 
   const jobs = useQuery({
     queryKey: ["jobs"],
@@ -28,13 +43,15 @@ export function Add() {
   });
 
   const submit = useMutation({
-    mutationFn: async () => {
-      const trimmed = text.trim();
-      const looksLikeUrl = /^https?:\/\/\S+$/i.test(trimmed);
-      if (files.length > 0) {
-        return api.ingestFiles(files, looksLikeUrl ? { url: trimmed } : { text: trimmed });
+    mutationFn: async ({ text: raw, files: picked }: Payload) => {
+      const trimmed = raw.trim();
+      const extra = URL_ONLY.test(trimmed) ? { url: trimmed } : { text: trimmed };
+      if (picked.length > 0) {
+        setProgress(0);
+        const ready = await prepareAll(picked);
+        return api.ingestFiles(ready, extra, (sent, total) => setProgress(sent / total));
       }
-      return api.ingest(looksLikeUrl ? { url: trimmed } : { text: trimmed });
+      return api.ingest(extra);
     },
     onSuccess: (job) => {
       setText("");
@@ -42,34 +59,61 @@ export function Add() {
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       navigate(`/j/${job.id}`);
     },
+    onSettled: () => setProgress(null),
   });
 
-  // A share from the phone's share sheet is stashed by the service worker.
+  // Shared from another app's share sheet: the service worker stashed it, and
+  // there is nothing left to decide, so capture it straight away.
   useEffect(() => {
-    if (!params.has("shared")) return;
+    if (!params.has("shared") || sharedHandled.current) return;
+    sharedHandled.current = true;
     void (async () => {
       const shared = await takeShared();
+      setParams({}, { replace: true });
       if (!shared) return;
-      if (shared.files.length > 0) setFiles(shared.files);
-      const parts = [shared.url, shared.text].filter(Boolean).join("\n").trim();
-      if (parts) setText(parts);
-      inputRef.current?.focus();
+      const sharedText = [shared.url, shared.text].filter(Boolean).join("\n").trim();
+      if (!sharedText && shared.files.length === 0) return;
+      setText(sharedText);
+      setFiles(shared.files);
+      submit.mutate({ text: sharedText, files: shared.files });
     })();
-  }, [params]);
+  }, [params, setParams, submit]);
 
+  // On a phone the keyboard would cover half the screen before you chose anything.
   useEffect(() => {
-    inputRef.current?.focus();
+    if (!isTouch()) inputRef.current?.focus();
   }, []);
 
-  const canSubmit = text.trim().length > 0 || files.length > 0;
+  const paste = async () => {
+    setPasteHint(false);
+    try {
+      const clip = (await navigator.clipboard.readText()).trim();
+      if (clip) {
+        setText(clip);
+        return;
+      }
+    } catch {
+      /* permission refused or not supported; fall back to the system paste menu */
+    }
+    setPasteHint(true);
+    inputRef.current?.focus();
+  };
+
+  const canSubmit = (text.trim().length > 0 || files.length > 0) && !submit.isPending;
+  const busyLabel =
+    progress === null
+      ? "Starting…"
+      : progress < 1
+        ? `Uploading ${Math.round(progress * 100)}%`
+        : "Reading…";
 
   return (
     <div className="mx-auto max-w-2xl space-y-4">
       <div>
-        <h1 className="text-base font-semibold">Add a recipe</h1>
+        <h1 className="text-lg font-semibold sm:text-base">Add a recipe</h1>
         <p className="text-sm text-muted">
-          Paste a link or the recipe itself, or add photos of a cookbook page. On your phone, share
-          straight into Onigiri from Instagram.
+          Paste a link from Instagram, TikTok or a recipe site, paste the recipe itself, or
+          photograph a cookbook page or a handwritten card.
         </p>
       </div>
 
@@ -77,7 +121,7 @@ export function Add() {
         className="card space-y-3 p-3"
         onSubmit={(event) => {
           event.preventDefault();
-          if (canSubmit) submit.mutate();
+          if (canSubmit) submit.mutate({ text, files });
         }}
         onDragOver={(event) => {
           event.preventDefault();
@@ -90,70 +134,67 @@ export function Add() {
           setFiles([...files, ...Array.from(event.dataTransfer.files)]);
         }}
       >
-        <textarea
-          ref={inputRef}
-          className={`field min-h-32 resize-y font-mono text-[13px] ${
-            dragging ? "border-accent" : ""
-          }`}
-          placeholder={
-            "https://www.instagram.com/reel/…\n\nor paste the recipe text\n\nor drop photos here"
-          }
-          value={text}
-          onChange={(event) => setText(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && canSubmit) {
-              event.preventDefault();
-              submit.mutate();
-            }
-          }}
-        />
-
-        {files.length > 0 && (
-          <ul className="flex flex-wrap gap-2">
-            {files.map((file, index) => (
-              <li key={`${file.name}-${index}`} className="chip">
-                {file.type.startsWith("video/") ? "Video" : "Photo"} · {file.name.slice(0, 28)}
-                <button
-                  type="button"
-                  className="text-faint hover:text-ink"
-                  onClick={() => setFiles(files.filter((_, i) => i !== index))}
-                  aria-label={`Remove ${file.name}`}
-                >
-                  ×
-                </button>
-              </li>
-            ))}
-          </ul>
+        <div className="relative">
+          <textarea
+            ref={inputRef}
+            className={`field min-h-32 resize-y ${dragging ? "border-accent" : ""}`}
+            placeholder={"Link or recipe text"}
+            autoCapitalize="sentences"
+            value={text}
+            onChange={(event) => {
+              setText(event.target.value);
+              setPasteHint(false);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && canSubmit) {
+                event.preventDefault();
+                submit.mutate({ text, files });
+              }
+            }}
+          />
+          {!text && (
+            <button
+              type="button"
+              className="btn btn-sm absolute bottom-2 right-2"
+              onClick={() => void paste()}
+            >
+              Paste
+            </button>
+          )}
+        </div>
+        {pasteHint && (
+          <p className="text-xs text-muted">Press and hold in the box above, then choose Paste.</p>
         )}
 
-        <div className="flex flex-wrap items-center gap-2">
-          <label className="btn btn-sm cursor-pointer">
-            <IconCamera className="h-3.5 w-3.5" />
-            Photos or video
-            <input
-              type="file"
-              className="hidden"
-              multiple
-              accept="image/*,video/*"
-              onChange={(event) => setFiles([...files, ...Array.from(event.target.files ?? [])])}
+        <MediaPicker files={files} onChange={setFiles} />
+
+        <button
+          type="submit"
+          className="btn btn-primary w-full sm:ml-auto sm:w-auto"
+          disabled={!canSubmit}
+        >
+          {submit.isPending ? busyLabel : "Save recipe"}
+        </button>
+        {progress !== null && progress < 1 && (
+          <div className="h-1 overflow-hidden rounded bg-surface">
+            <div
+              className="h-full bg-accent transition-[width]"
+              style={{ width: `${Math.round(progress * 100)}%` }}
             />
-          </label>
-          <span className="flex-1" />
-          <span className="hidden text-xs text-faint sm:inline">
-            <span className="kbd">⌘</span> <span className="kbd">↵</span> to capture
-          </span>
-          <button
-            type="submit"
-            className="btn btn-primary btn-sm"
-            disabled={!canSubmit || submit.isPending}
-          >
-            <IconPlus className="h-3.5 w-3.5" />
-            {submit.isPending ? "Starting…" : "Capture"}
-          </button>
-        </div>
+          </div>
+        )}
 
         {submit.isError && <ErrorBox error={submit.error} />}
+        <p className="hidden text-xs text-faint sm:block">
+          <span className="kbd">⌘</span> <span className="kbd">↵</span> to save. You can also drop
+          photos onto this box.
+        </p>
       </form>
+
+      <p className="text-xs text-faint sm:hidden">
+        On Android, install Onigiri to your home screen and it appears in the share menu of
+        Instagram and other apps. On iPhone, copy the link and tap Paste.
+      </p>
 
       <section className="space-y-2">
         <h2 className="label">Recent captures</h2>

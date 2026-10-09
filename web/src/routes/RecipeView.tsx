@@ -19,6 +19,13 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 
 type Panel = "recipe" | "source";
 
+/** One serving up or down; below one serving, step in halves. */
+function stepServings(current: number | null, direction: 1 | -1): number {
+  const value = current ?? 1;
+  const step = value + direction * 1 < 1 || value < 1 ? 0.5 : 1;
+  return Math.max(0.5, Math.round((value + direction * step) * 2) / 2);
+}
+
 export function RecipeView() {
   const { recipeId } = useParams<{ recipeId: string }>();
   const navigate = useNavigate();
@@ -28,6 +35,7 @@ export function RecipeView() {
   const [servings, setServings] = useState<number | null>(null);
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [logOpen, setLogOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
 
   const recipe = useQuery({
     queryKey: ["recipe", recipeId],
@@ -39,7 +47,14 @@ export function RecipeView() {
 
   const scaled = useQuery({
     queryKey: ["scaled", recipeId, target, units],
-    queryFn: () => api.scaled(recipeId as string, target ?? undefined, units),
+    // Ask with no parameters unless something changed, so the request matches the
+    // copy the background offline pass saved.
+    queryFn: () =>
+      api.scaled(
+        recipeId as string,
+        servings !== null && servings !== recipe.data?.servings ? servings : undefined,
+        units === "original" ? undefined : units,
+      ),
     enabled: Boolean(recipeId && recipe.data),
   });
 
@@ -98,16 +113,18 @@ export function RecipeView() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-start gap-3">
+      {/* Phone: photo across the top, title, then a row of three big buttons.
+          Wider screens: small photo left, actions right. */}
+      <div className="space-y-3 sm:flex sm:items-start sm:gap-3 sm:space-y-0">
         {r.hero_url && (
           <img
             src={r.hero_url}
             alt=""
-            className="h-24 w-24 rounded-lg border border-line object-cover"
+            className="aspect-[16/10] w-full rounded-lg border border-line object-cover sm:aspect-square sm:h-24 sm:w-24"
           />
         )}
         <div className="min-w-0 flex-1 space-y-1">
-          <h1 className="text-lg font-semibold leading-tight">{r.title}</h1>
+          <h1 className="text-xl font-semibold leading-tight sm:text-lg">{r.title}</h1>
           {r.title_original && r.title_original !== r.title && (
             <p className="text-sm italic text-muted">{r.title_original}</p>
           )}
@@ -137,7 +154,7 @@ export function RecipeView() {
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-1.5 no-print">
+        <div className="grid grid-cols-3 gap-2 no-print sm:flex sm:shrink-0 sm:gap-1.5">
           <button
             type="button"
             className="btn btn-sm"
@@ -170,29 +187,53 @@ export function RecipeView() {
       )}
 
       {r.status === "needs_review" && r.review_reason && (
-        <div className="card flex flex-wrap items-center gap-2 border-warn/40 px-3 py-2">
-          <IconAlert className="h-4 w-4 text-warn" />
-          <p className="flex-1 text-sm">{r.review_reason}</p>
-          <button
-            type="button"
-            className="btn btn-sm"
-            onClick={() => markReviewed.mutate()}
-            disabled={markReviewed.isPending}
-          >
-            Looks right
-          </button>
-          {r.source && (
+        <div className="card space-y-2 border-warn/40 px-3 py-2">
+          <div className="flex items-start gap-2">
+            <IconAlert className="mt-0.5 h-4 w-4 shrink-0 text-warn" />
+            <div className="flex-1">
+              <p className={`text-sm ${reviewOpen ? "" : "line-clamp-3"}`}>{r.review_reason}</p>
+              {r.review_reason.length > 160 && (
+                <button
+                  type="button"
+                  className="mt-1 text-xs text-faint underline"
+                  onClick={() => setReviewOpen(!reviewOpen)}
+                >
+                  {reviewOpen ? "Show less" : "Show all"}
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
             <button
               type="button"
               className="btn btn-sm"
-              onClick={() => reextract.mutate()}
-              disabled={reextract.isPending}
+              onClick={() => markReviewed.mutate()}
+              disabled={markReviewed.isPending}
             >
-              <IconRefresh className="h-3.5 w-3.5" />
-              {reextract.isPending ? "Re-reading…" : "Read it again"}
+              Looks right
             </button>
-          )}
+            {r.source && (
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => reextract.mutate()}
+                disabled={reextract.isPending}
+              >
+                <IconRefresh className="h-3.5 w-3.5" />
+                {reextract.isPending ? "Re-reading…" : "Read it again"}
+              </button>
+            )}
+          </div>
         </div>
+      )}
+
+      {r.status !== "needs_review" && r.review_reason && (
+        <details className="text-sm text-muted">
+          <summary className="cursor-pointer py-1 text-xs text-faint">
+            What the source left out
+          </summary>
+          <p className="mt-1">{r.review_reason}</p>
+        </details>
       )}
 
       {hasSource && (
@@ -216,26 +257,28 @@ export function RecipeView() {
         <div className={`space-y-5 ${panel === "source" ? "hidden lg:block" : ""}`}>
           <section className="space-y-2">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="label flex-1">Ingredients</h2>
-              <div className="flex items-center gap-1 no-print">
+              <h2 className="label flex-1 basis-full sm:basis-auto">Ingredients</h2>
+              <div className="flex w-full flex-wrap items-center gap-1.5 no-print sm:w-auto">
                 <button
                   type="button"
-                  className="btn btn-sm"
-                  onClick={() => setServings(Math.max(0.5, (target ?? 1) / 2))}
-                  disabled={!r.servings}
+                  className="btn btn-sm w-11"
+                  aria-label="One serving fewer"
+                  onClick={() => setServings(stepServings(target, -1))}
+                  disabled={!r.servings || (target ?? 0) <= 0.5}
                 >
-                  ÷2
+                  −
                 </button>
-                <span className="min-w-20 text-center text-sm tabular-nums">
+                <span className="min-w-24 text-center text-sm tabular-nums">
                   {prettyNumber(target)} {r.servings_unit ?? "servings"}
                 </span>
                 <button
                   type="button"
-                  className="btn btn-sm"
-                  onClick={() => setServings((target ?? 1) * 2)}
+                  className="btn btn-sm w-11"
+                  aria-label="One serving more"
+                  onClick={() => setServings(stepServings(target, 1))}
                   disabled={!r.servings}
                 >
-                  ×2
+                  +
                 </button>
                 {servings !== null && servings !== r.servings && (
                   <button type="button" className="btn btn-sm" onClick={() => setServings(null)}>
@@ -243,7 +286,8 @@ export function RecipeView() {
                   </button>
                 )}
                 <select
-                  className="field w-auto py-1 text-xs"
+                  aria-label="Units"
+                  className="field ml-auto w-auto py-1 text-xs"
                   value={units}
                   onChange={(event) => setUnits(event.target.value as "original" | "metric" | "us")}
                 >
@@ -268,7 +312,7 @@ export function RecipeView() {
                     <li key={ing.id}>
                       <button
                         type="button"
-                        className={`flex w-full items-baseline gap-2 rounded px-1 py-0.5 text-left text-sm hover:bg-surface ${
+                        className={`flex w-full items-baseline gap-2 rounded px-1 py-2 text-left text-[15px] hover:bg-surface sm:py-0.5 sm:text-sm ${
                           checked.has(ing.id) ? "text-faint line-through" : ""
                         }`}
                         onClick={() => toggleChecked(ing.id)}

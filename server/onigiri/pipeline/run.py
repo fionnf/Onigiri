@@ -354,11 +354,13 @@ async def _read_frames_stage(
         await sw.note("No frames could be sampled from the video.")
         return None
 
+    cover = await asyncio.to_thread(mediautil.pick_cover_frame, frames)
+    cover_path = cover.path if cover else None
     try:
         text = await vision.read_keyframes([f.path.read_bytes() for f in frames], usage=usage)
     except llm.LLMError as exc:
         await sw.note(f"Could not read the on-screen text: {exc}")
-        return frames[len(frames) // 2].path
+        return cover_path
 
     source.onscreen_text = text or None
     await db.flush()
@@ -366,7 +368,7 @@ async def _read_frames_stage(
         f"Sampled {len(frames)} distinct frames and read "
         f"{len(text.splitlines()) if text else 0} lines of on-screen text."
     )
-    return frames[len(frames) // 2].path
+    return cover_path
 
 
 async def _read_photos_stage(

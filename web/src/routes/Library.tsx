@@ -95,20 +95,30 @@ export function Library() {
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="relative min-w-0 flex-1">
-          <IconSearch className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-faint" />
+        {/* On a phone the search gets the whole first row; the rest wraps below it. */}
+        <div className="relative w-full min-w-0 sm:w-auto sm:flex-1">
+          <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-faint" />
           <input
             ref={searchRef}
-            className="field pl-8"
-            placeholder="Search titles, ingredients, steps…"
+            type="search"
+            enterKeyHint="search"
+            autoCapitalize="off"
+            autoCorrect="off"
+            className="field pl-9"
+            placeholder="Search recipes or ingredients"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
-          {!query && <span className="kbd pointer-events-none absolute right-2.5 top-2">/</span>}
+          {!query && (
+            <span className="kbd pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2">
+              /
+            </span>
+          )}
         </div>
 
         <select
-          className="field w-auto"
+          aria-label="Sort"
+          className="field w-auto flex-1 sm:flex-none"
           value={sort}
           onChange={(e) => setParam("sort", e.target.value)}
         >
@@ -123,13 +133,13 @@ export function Library() {
           {dense ? "Cards" : "List"}
         </button>
 
-        <Link to="/add" className="btn btn-primary btn-sm">
+        <Link to="/add" className="btn btn-primary btn-sm hidden sm:inline-flex">
           <IconPlus className="h-3.5 w-3.5" />
           Add
         </Link>
       </div>
 
-      <div className="flex flex-wrap items-center gap-1.5">
+      <div className="scroll-row -mx-4 px-4 sm:mx-0 sm:flex-wrap sm:px-0">
         <button
           type="button"
           className={`chip ${status === "needs_review" ? "chip-on" : ""}`}
@@ -144,20 +154,22 @@ export function Library() {
         >
           Favourites
         </button>
-        {collections.data?.map((c) => (
-          <button
-            key={c.id}
-            type="button"
-            className={`chip ${collection === c.id ? "chip-on" : ""}`}
-            onClick={() => setParam("collection", collection === c.id ? undefined : c.id)}
-          >
-            {c.name}
-            <span className="text-faint">{c.count}</span>
-          </button>
-        ))}
+        {collections.data
+          ?.filter((c) => c.count > 0 || collection === c.id)
+          .map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              className={`chip ${collection === c.id ? "chip-on" : ""}`}
+              onClick={() => setParam("collection", collection === c.id ? undefined : c.id)}
+            >
+              {c.name}
+              <span className={collection === c.id ? "" : "text-faint"}>{c.count}</span>
+            </button>
+          ))}
         {tags.data
           ?.filter((t) => t.count > 0)
-          .slice(0, 14)
+          .slice(0, 20)
           .map((t) => (
             <button
               key={t.id}
