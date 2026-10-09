@@ -7,7 +7,6 @@ import logging
 from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from onigiri.config import settings
 from onigiri.models import (
     Ingredient,
     IngredientGroup,
@@ -23,7 +22,12 @@ from onigiri.models import (
     User,
 )
 from onigiri.pipeline.prompts import build_extract_input, extract_system_prompt
-from onigiri.recipe_schema import RECIPE_JSON_SCHEMA_NAME, ExtractedRecipe
+from onigiri.recipe_schema import (
+    RECIPE_JSON_SCHEMA_NAME,
+    ExtractedRecipe,
+    WireRecipe,
+    to_extracted,
+)
 from onigiri.services import llm
 from onigiri.units import COUNT, NONE, detect_timers, lookup_unit, parse_ingredient
 
@@ -174,6 +178,9 @@ TECHNIQUES = {
 }
 
 
+REVIEW_BELOW_CONFIDENCE = 0.75
+
+
 def tag_kind_for(name: str) -> TagKind:
     n = name.strip().lower()
     if n in CUISINES:
@@ -223,14 +230,14 @@ async def run_extraction(
         photo_text=source.photo_text,
         extra_note=extra_note,
     )
-    return await llm.structured(
-        ExtractedRecipe,
+    wire = await llm.structured(
+        WireRecipe,
         extract_system_prompt(profile),
         content,
         schema_name=RECIPE_JSON_SCHEMA_NAME,
-        model=settings.openai_extract_model,
         usage=usage,
     )
+    return to_extracted(wire)
 
 
 def _unit_class_for(unit: str | None, quantity: float | None) -> UnitClass:
@@ -338,10 +345,11 @@ async def apply_extracted(
         reason_parts.append("Not stated in the source: " + ", ".join(extracted.missing[:8]))
     recipe.review_reason = " ".join(reason_parts)[:1000] or None
 
+    # Claude nearly always finds something a source left unsaid, so a note alone does
+    # not send a recipe to the inbox. Low confidence or a missing half does; the note
+    # is still kept and shown on the recipe.
     has_content = bool(extracted.ingredient_groups and extracted.steps)
-    if not extracted.is_recipe or not has_content or extracted.confidence < 0.55:
-        recipe.status = RecipeStatus.needs_review
-    elif extracted.review_reason or extracted.missing:
+    if not extracted.is_recipe or not has_content or extracted.confidence < REVIEW_BELOW_CONFIDENCE:
         recipe.status = RecipeStatus.needs_review
     else:
         recipe.status = RecipeStatus.ready

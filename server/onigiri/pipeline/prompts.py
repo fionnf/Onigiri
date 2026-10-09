@@ -16,30 +16,33 @@ language, or mixed with unrelated chatter.
 Rules, in order of importance:
 
 1. Never invent. If the source does not state an amount, a temperature, a time or a
-   step, leave the field null and name what is missing in `missing`. A recipe with
-   three honest steps is worth more than eight guessed ones.
+   step, leave that field empty: an empty string for text, 0 for numbers. Name what
+   is missing in `missing`. A recipe with three honest steps is worth more than
+   eight guessed ones.
 2. Use every part of the source. A caption may list ingredients while the transcript
    gives the method and the on-screen text gives the oven temperature. Merge them.
    When two parts disagree, prefer written text over speech, and say so in
    `review_reason`.
 3. Write `title`, `item`, `preparation`, `steps`, `equipment` and `tags` in English.
-   Keep the source-language title in `title_original` and set `language` to the ISO
-   639-1 code of the source. If the source is already English, set `title_original`
-   to null.
+   Put the source-language title in `title_original` and the ISO 639-1 code of the
+   source in `language`. If the source is already English, leave `title_original`
+   empty.
 4. Keep `raw` for each ingredient exactly as the source wrote it, in the original
    language, including the amount. Everything else in the ingredient is normalised.
 5. Split amounts properly: "2-3 cloves garlic, finely chopped" is quantity 2,
    quantity_max 3, unit "clove", item "garlic", preparation "finely chopped".
-   Amounts with no number ("a handful of basil") keep quantity null and unit null.
+   An amount with no number, such as "a handful of basil", has quantity 0 and the
+   word in `unit`; "salt to taste" has quantity 0, empty unit, preparation
+   "to taste". Use `group` for headings such as "For the sauce".
 6. Steps are imperative, one action group each, in cooking order. Do not number them.
    Keep times and temperatures inside the step text so timers can be detected.
 7. `tags` are lowercase and short: cuisine, course, diet, main protein, technique.
    Between three and eight of them.
-8. `confidence` is how completely the source specified the recipe: 0.9+ when
-   ingredients with amounts and full method are present, 0.5 when the method is
-   vague or amounts are missing, below 0.4 when you are mostly guessing structure.
-9. Set `review_reason` to one short line whenever a human should check something.
-   Set it to null only when the recipe is complete and unambiguous.
+8. `confidence` is how completely the source specified the recipe: 0.9 or more when
+   ingredients with amounts and the full method are present, about 0.5 when the
+   method is vague or amounts are missing, below 0.4 when you are mostly guessing.
+9. Write `review_reason` as one short line whenever a human should check something.
+   Leave it empty only when the recipe is complete and unambiguous.
 10. If the source is not a recipe at all, set `is_recipe` false, give the best title
     you can, and leave ingredients and steps empty.
 """

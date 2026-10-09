@@ -1,20 +1,21 @@
-"""OpenAI access: structured extraction, vision reading, transcription, embeddings.
+"""Model access.
 
-All calls go through here so that model names, usage accounting and error handling
-live in one place. The schema sanitiser turns a Pydantic model into a schema the
-structured-outputs API accepts in strict mode.
+Claude reads every recipe: structured extraction, photos, and text in video frames.
+Claude has no speech-to-text or embedding endpoint, so those two stay on OpenAI and
+are optional: without OPENAI_API_KEY a video is read from its caption and on-screen
+text only, and search runs on full text and fuzzy matching without the semantic leg.
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
-import copy
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar
 
+import anthropic
 from pydantic import BaseModel, ValidationError
 
 from onigiri.config import settings
@@ -23,61 +24,21 @@ log = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
+# Server-side refusal fallback: if a safety classifier declines a request, the API
+# re-runs it on the model Anthropic recommends for that category, in the same call.
+FALLBACK_BETA = "server-side-fallback-2026-07-01"
+
 
 class LLMError(RuntimeError):
-    """Raised when the model cannot be reached or returns something unusable."""
+    """The model could not be reached or returned something unusable."""
 
 
 class LLMNotConfigured(LLMError):
-    pass
+    """A key the requested feature needs is missing."""
 
 
-# Keywords the structured-outputs strict mode rejects.
-_UNSUPPORTED_KEYS = {
-    "default",
-    "minimum",
-    "maximum",
-    "exclusiveMinimum",
-    "exclusiveMaximum",
-    "multipleOf",
-    "minLength",
-    "maxLength",
-    "pattern",
-    "format",
-    "minItems",
-    "maxItems",
-    "uniqueItems",
-    "examples",
-    "$comment",
-    "contentEncoding",
-    "contentMediaType",
-    "minProperties",
-    "maxProperties",
-}
-
-
-def strict_schema(model: type[BaseModel]) -> dict[str, Any]:
-    """Convert a Pydantic model into a strict JSON schema.
-
-    Strict mode requires every property to be listed in `required` and every object
-    to forbid extra properties. Optional fields stay expressible because Pydantic
-    renders them as a union with null.
-    """
-    schema = copy.deepcopy(model.model_json_schema())
-
-    def walk(node: Any) -> Any:
-        if isinstance(node, list):
-            return [walk(n) for n in node]
-        if not isinstance(node, dict):
-            return node
-        node = {k: walk(v) for k, v in node.items() if k not in _UNSUPPORTED_KEYS}
-        if node.get("type") == "object" or "properties" in node:
-            props = node.get("properties", {})
-            node["additionalProperties"] = False
-            node["required"] = list(props.keys())
-        return node
-
-    return walk(schema)
+class LLMDeclined(LLMError):
+    """The model, and its fallback, declined the request."""
 
 
 @dataclass
@@ -106,40 +67,69 @@ class Usage:
         }
 
 
-_client: Any = None
+# --------------------------------------------------------------------------- clients
+
+_claude: anthropic.AsyncAnthropic | None = None
+_openai: Any = None
 
 
-def get_client() -> Any:
-    global _client
-    if _client is None:
-        if not settings.openai_api_key:
+def get_claude() -> anthropic.AsyncAnthropic:
+    global _claude
+    if _claude is None:
+        if not settings.anthropic_api_key:
             raise LLMNotConfigured(
-                "OPENAI_API_KEY is not set. Add it to the environment to enable extraction."
+                "ANTHROPIC_API_KEY is not set. Add it to the environment to read recipes."
             )
+        _claude = anthropic.AsyncAnthropic(
+            api_key=settings.anthropic_api_key,
+            max_retries=3,
+            timeout=settings.anthropic_timeout_s,
+        )
+    return _claude
+
+
+def get_openai() -> Any:
+    global _openai
+    if _openai is None:
+        if not settings.openai_api_key:
+            raise LLMNotConfigured("OPENAI_API_KEY is not set.")
         from openai import AsyncOpenAI
 
-        _client = AsyncOpenAI(
-            api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url,
-            max_retries=3,
-            timeout=180.0,
-        )
-    return _client
+        _openai = AsyncOpenAI(api_key=settings.openai_api_key, max_retries=3, timeout=180.0)
+    return _openai
 
 
-def reset_client() -> None:
-    """Used by tests to drop a cached client."""
-    global _client
-    _client = None
+def reset_clients() -> None:
+    """Drop cached clients, so a changed key takes effect. Used by tests."""
+    global _claude, _openai, _embed_paused_until
+    _claude = None
+    _openai = None
+    _embed_paused_until = 0.0
+
+
+def speech_available() -> bool:
+    return bool(settings.openai_api_key)
+
+
+# --------------------------------------------------------------------------- content
 
 
 def image_part(data: bytes, content_type: str = "image/jpeg") -> dict[str, Any]:
-    b64 = base64.b64encode(data).decode()
-    return {"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{b64}"}}
+    return {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": content_type,
+            "data": base64.standard_b64encode(data).decode("ascii"),
+        },
+    }
 
 
 def text_part(text: str) -> dict[str, Any]:
     return {"type": "text", "text": text}
+
+
+# --------------------------------------------------------------------------- Claude
 
 
 async def structured(
@@ -148,64 +138,78 @@ async def structured(
     content: str | list[dict[str, Any]],
     *,
     schema_name: str,
-    model: str | None = None,
+    effort: str | None = None,
     usage: Usage | None = None,
-    temperature: float | None = 0.1,
+    max_tokens: int = 16000,
 ) -> T:
-    """Call the model and validate the reply against `schema_model`."""
-    client = get_client()
-    model_name = model or settings.openai_extract_model
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": content},
-    ]
-    kwargs: dict[str, Any] = {
-        "model": model_name,
-        "messages": messages,
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
-                "name": schema_name,
-                "strict": True,
-                "schema": strict_schema(schema_model),
-            },
-        },
-    }
-    if temperature is not None:
-        kwargs["temperature"] = temperature
-
+    """Ask Claude for one object matching `schema_model`, validated on the way back."""
+    client = get_claude()
     try:
-        resp = await client.chat.completions.create(**kwargs)
-    except Exception as exc:
-        msg = str(exc)
-        if "temperature" in msg and temperature is not None:
-            kwargs.pop("temperature")
-            resp = await client.chat.completions.create(**kwargs)
-        else:
-            raise LLMError(f"{model_name} call failed: {exc}") from exc
+        response = await client.beta.messages.parse(
+            model=settings.anthropic_model,
+            max_tokens=max_tokens,
+            betas=[FALLBACK_BETA],
+            fallbacks="default",
+            system=system,
+            output_config={"effort": effort or settings.anthropic_effort},
+            output_format=schema_model,
+            messages=[{"role": "user", "content": content}],
+        )
+    except anthropic.AuthenticationError as exc:
+        raise LLMNotConfigured(
+            "ANTHROPIC_API_KEY was rejected. Check the key, or create a new one."
+        ) from exc
+    except anthropic.PermissionDeniedError as exc:
+        raise LLMError(f"This API key cannot use {settings.anthropic_model}.") from exc
+    except anthropic.RateLimitError as exc:
+        raise LLMError("Claude is rate limiting this key. Try again in a minute.") from exc
+    except anthropic.BadRequestError as exc:
+        raise LLMError(f"Claude rejected the request: {exc.message}") from exc
+    except anthropic.APIStatusError as exc:
+        raise LLMError(f"Claude returned an error ({exc.status_code}).") from exc
+    except anthropic.APIConnectionError as exc:
+        raise LLMError("Could not reach Claude. Check the network.") from exc
+    except ValidationError as exc:
+        raise LLMError(f"Claude's answer did not match the {schema_name} shape: {exc}") from exc
 
-    if usage is not None and getattr(resp, "usage", None):
-        usage.input_tokens += resp.usage.prompt_tokens or 0
-        usage.output_tokens += resp.usage.completion_tokens or 0
+    if usage is not None:
+        usage.input_tokens += response.usage.input_tokens or 0
+        usage.output_tokens += response.usage.output_tokens or 0
         usage.add_call(schema_name)
 
-    choice = resp.choices[0]
-    if getattr(choice.message, "refusal", None):
-        raise LLMError(f"Model refused: {choice.message.refusal}")
-    raw = choice.message.content or ""
-    try:
-        return schema_model.model_validate_json(raw)
-    except ValidationError as exc:
-        raise LLMError(f"Model returned data that did not match the schema: {exc}") from exc
+    if response.stop_reason == "refusal":
+        details = response.stop_details
+        category = getattr(details, "category", None) if details else None
+        raise LLMDeclined(
+            "Claude declined to read this source"
+            + (f" ({category})" if category else "")
+            + ". Paste the recipe text instead."
+        )
+    if response.stop_reason == "max_tokens":
+        raise LLMError("Claude ran out of room before finishing. Try a shorter source.")
+
+    parsed = response.parsed_output
+    if parsed is None:
+        raise LLMError(f"Claude returned no {schema_name}.")
+    log.info(
+        "%s via %s: %s in, %s out",
+        schema_name,
+        response.model,
+        response.usage.input_tokens,
+        response.usage.output_tokens,
+    )
+    return parsed
+
+
+# --------------------------------------------------------------------------- OpenAI
 
 
 async def transcribe_file(
     path: str | Path, *, language: str | None = None, usage: Usage | None = None
 ) -> dict[str, Any]:
-    """Transcribe an audio file. Returns {'text', 'segments', 'language'}."""
-    client = get_client()
+    """Transcribe audio with OpenAI. Returns {'text', 'segments', 'language', 'duration'}."""
+    client = get_openai()
     p = Path(path)
-
     payload = await asyncio.to_thread(p.read_bytes)
 
     async def _call(response_format: str) -> Any:
@@ -246,27 +250,37 @@ async def transcribe_file(
     }
 
 
-async def embed(text: str, *, usage: Usage | None = None) -> list[float]:
-    client = get_client()
-    trimmed = text[:8000]
-    resp = await client.embeddings.create(model=settings.openai_embed_model, input=trimmed)
+# After a failed embedding, skip the semantic leg for a while instead of making every
+# search wait on a provider that is down or a key that is wrong.
+EMBED_COOLDOWN_S = 300.0
+_embed_paused_until = 0.0
+
+
+async def embed(text: str, *, usage: Usage | None = None, fast: bool = False) -> list[float]:
+    """Embedding for semantic search. Optional: callers treat LLMError as 'skip it'.
+
+    `fast` is for the search box: one short attempt, so a slow provider never holds up
+    results that full-text search can already give.
+    """
+    global _embed_paused_until
+    client = get_openai()
+    loop = asyncio.get_running_loop()
+    if loop.time() < _embed_paused_until:
+        raise LLMError("Semantic search is paused after a recent failure.")
+    if fast:
+        client = client.with_options(timeout=4.0, max_retries=0)
+    try:
+        resp = await client.embeddings.create(model=settings.openai_embed_model, input=text[:8000])
+    except Exception as exc:
+        _embed_paused_until = loop.time() + EMBED_COOLDOWN_S
+        raise LLMError(f"Embedding failed: {exc}") from exc
     if usage is not None:
         usage.input_tokens += getattr(resp.usage, "prompt_tokens", 0) or 0
         usage.add_call("embed")
     return list(resp.data[0].embedding)
 
 
-async def embed_many(texts: list[str], *, usage: Usage | None = None) -> list[list[float]]:
-    if not texts:
-        return []
-    client = get_client()
-    resp = await client.embeddings.create(
-        model=settings.openai_embed_model, input=[t[:8000] for t in texts]
-    )
-    if usage is not None:
-        usage.input_tokens += getattr(resp.usage, "prompt_tokens", 0) or 0
-        usage.add_call("embed")
-    return [list(d.embedding) for d in resp.data]
+# --------------------------------------------------------------------------- helpers
 
 
 async def gather_limited(coros: list[Any], limit: int = 4) -> list[Any]:

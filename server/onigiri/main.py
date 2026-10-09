@@ -147,7 +147,13 @@ async def health() -> dict[str, object]:
         checks["database"] = "ok"
     except Exception as exc:
         checks["database"] = f"error: {exc}"
-    checks["extraction"] = "configured" if settings.openai_api_key else "no OPENAI_API_KEY"
+    checks["extraction"] = (
+        f"claude ({settings.anthropic_model})"
+        if settings.anthropic_api_key
+        else "no ANTHROPIC_API_KEY"
+    )
+    checks["speech"] = "openai" if settings.openai_api_key else "off (no OPENAI_API_KEY)"
+    checks["semantic_search"] = "openai" if settings.openai_api_key else "off (no OPENAI_API_KEY)"
     checks["instagram"] = "configured" if settings.apify_token else "no APIFY_TOKEN"
     checks["storage"] = "s3" if settings.use_s3 else "local disk"
     checks["jobs"] = settings.job_backend

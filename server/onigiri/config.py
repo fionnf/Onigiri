@@ -44,11 +44,19 @@ class Settings(BaseSettings):
     # Where the built web app lives. Set explicitly in the container image.
     web_dist: str | None = None
 
-    # --- OpenAI ---
+    # --- Claude: reads every recipe (text, web pages, photos, video frames) ---
+    anthropic_api_key: str | None = None
+    anthropic_model: str = "claude-opus-5-5"
+    # How hard Claude thinks. "medium" for writing the recipe out, "low" for reading
+    # text off video frames, which is transcription rather than judgement.
+    anthropic_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
+    anthropic_frame_effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
+    anthropic_timeout_s: float = 600.0
+
+    # --- OpenAI: optional, for the two things Claude has no endpoint for ---
+    # Without it, videos are read from caption and on-screen text, not speech,
+    # and search uses full text and fuzzy matching without the semantic leg.
     openai_api_key: str | None = None
-    openai_base_url: str | None = None
-    openai_extract_model: str = "gpt-4.1"
-    openai_vision_model: str = "gpt-4.1"
     openai_stt_model: str = "whisper-1"
     openai_embed_model: str = "text-embedding-3-small"
     embedding_dim: int = 1536

@@ -22,6 +22,7 @@ os.environ["JOB_BACKEND"] = "inline"
 os.environ["MEDIA_DIR"] = "./.media-test"
 # Environment variables outrank .env files, so blanking them here keeps a real key in the
 # developer's .env from ever being used, or billed, by the test suite.
+os.environ["ANTHROPIC_API_KEY"] = ""
 os.environ["OPENAI_API_KEY"] = ""
 os.environ["APIFY_TOKEN"] = ""
 
@@ -29,12 +30,16 @@ import pytest  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
+import onigiri.models  # noqa: E402,F401 - registers every table on Base.metadata
 from onigiri.db import Base, SessionLocal, engine  # noqa: E402
 from onigiri.recipe_schema import (  # noqa: E402
     ExtractedIngredient,
     ExtractedIngredientGroup,
     ExtractedRecipe,
     ExtractedStep,
+    WireIngredient,
+    WireRecipe,
+    WireStep,
 )
 
 
@@ -144,6 +149,43 @@ def sample_extraction(**overrides) -> ExtractedRecipe:
     return ExtractedRecipe(**data)
 
 
+def to_wire(recipe: ExtractedRecipe) -> WireRecipe:
+    """What Claude would have sent to produce `recipe`: flat, with "" and 0 for unknown."""
+    return WireRecipe(
+        is_recipe=recipe.is_recipe,
+        title=recipe.title,
+        title_original=recipe.title_original or "",
+        language=recipe.language or "",
+        description=recipe.description or "",
+        servings=recipe.servings or 0,
+        servings_unit=recipe.servings_unit or "",
+        prep_min=recipe.prep_min or 0,
+        cook_min=recipe.cook_min or 0,
+        total_min=recipe.total_min or 0,
+        ingredients=[
+            WireIngredient(
+                group=group.name or "",
+                raw=ing.raw,
+                quantity=ing.quantity or 0,
+                quantity_max=ing.quantity_max or 0,
+                unit=ing.unit or "",
+                item=ing.item,
+                preparation=ing.preparation or "",
+                optional=ing.optional,
+            )
+            for group in recipe.ingredient_groups
+            for ing in group.ingredients
+        ],
+        steps=[WireStep(section=s.section or "", text=s.text) for s in recipe.steps],
+        equipment=recipe.equipment,
+        tags=recipe.tags,
+        confidence=recipe.confidence,
+        missing=recipe.missing,
+        review_reason=recipe.review_reason or "",
+        profile_flags=recipe.profile_flags,
+    )
+
+
 @pytest.fixture
 def stub_llm(monkeypatch: pytest.MonkeyPatch):
     """Replace every model call with something deterministic."""
@@ -155,7 +197,7 @@ def stub_llm(monkeypatch: pytest.MonkeyPatch):
     async def fake_structured(schema_model, system, content, *, schema_name, **kw):
         calls["structured"].append({"schema": schema_name, "system": system, "content": content})
         if schema_name == "extracted_recipe":
-            return recipe_holder["recipe"]
+            return to_wire(recipe_holder["recipe"])
         return schema_model.model_construct()
 
     async def fake_embed(text_in: str, **kw) -> list[float]:

@@ -17,8 +17,8 @@ Single owner, single account. Nothing is public.
 |---|---|
 | Instagram post or reel | Apify fetches the caption and media; the video is transcribed and its on-screen text is read |
 | TikTok, YouTube, and other video pages | `yt-dlp` downloads it, then the same transcription and frame reading |
-| Any web page | `recipe-scrapers` uses published structured data when a site has it, which costs nothing; otherwise the readable text goes to the model |
-| Photos | Cookbook pages, magazine spreads, handwritten cards and screenshots, read by a vision model |
+| Any web page | `recipe-scrapers` uses published structured data when a site has it, which costs nothing; otherwise Claude reads the page text |
+| Photos | Cookbook pages, magazine spreads, handwritten cards and screenshots, read by Claude |
 | Video files | Uploaded directly, then transcribed and read |
 | Plain text | Pasted or typed |
 
@@ -58,7 +58,7 @@ psql onigiri -c 'create extension if not exists vector; create extension if not 
 
 # 2. Configuration
 cp .env.example .env     # in the repository root; set OWNER_EMAIL, OWNER_PASSWORD,
-                         # SECRET_KEY, OPENAI_API_KEY and APIFY_TOKEN
+                         # SECRET_KEY, ANTHROPIC_API_KEY and APIFY_TOKEN
 
 # 3. Server
 cd server
@@ -94,15 +94,18 @@ matter:
 | `OWNER_EMAIL`, `OWNER_PASSWORD` | The single account. Changing either and restarting takes effect; recipes are kept |
 | `SECRET_KEY` | Signs the session cookie. In production it must be at least 32 characters, and the app refuses to start with the example value |
 | `DATABASE_URL` | Postgres. A plain `postgres://` URL from a host is accepted |
-| `OPENAI_API_KEY` | Extraction, vision, transcription and embeddings |
+| `ANTHROPIC_API_KEY` | Required. Claude reads every recipe: pasted text, web pages, photos and video frames |
+| `ANTHROPIC_MODEL`, `ANTHROPIC_EFFORT` | Which Claude model, and how hard it thinks. Defaults are `claude-opus-5-5` and `medium` |
+| `OPENAI_API_KEY` | Optional. Speech in videos and semantic search, which Claude has no endpoint for |
 | `APIFY_TOKEN` | Instagram. Without it, Instagram captures ask you to paste instead |
 | `JOB_BACKEND` | `inline` runs captures in the API process; `arq` uses Redis and the worker |
 | `S3_*` | Object storage. Left blank, media goes to `MEDIA_DIR` on local disk |
 | `MONTHLY_JOB_CAP` | Refuses new captures past this many in 30 days |
 
-Without `OPENAI_API_KEY` the app still runs: web pages that publish structured recipe data
-are captured for free, and everything else fails with a clear message rather than a
-half-made recipe.
+Without `ANTHROPIC_API_KEY` the app still runs: web pages that publish structured recipe
+data are captured for free, and everything else fails with a clear message rather than a
+half-made recipe. Without `OPENAI_API_KEY`, videos are read from their caption and on-screen
+text but not their speech, and search uses full text and fuzzy matching only.
 
 ---
 
@@ -113,7 +116,7 @@ detect what was shared
   ├─ instagram   → Apify: caption, images, video
   ├─ short video → yt-dlp: description, video
   ├─ web         → recipe-scrapers, else readable text
-  ├─ photo       → vision model reads the page or card
+  ├─ photo       → Claude reads the page or card
   └─ text        → used as is
         │
         ├─ video present → ffmpeg → audio → transcript
@@ -125,9 +128,10 @@ detect what was shared
 ```
 
 Each stage writes a line to the job, so the capture screen shows what is happening and why
-it stopped. Frames are deduplicated by perceptual hash before they reach the vision model,
-because a talking-head reel is mostly the same frame and reading it sixty times is the
-easiest way to waste money here.
+it stopped. Before frames reach Claude, a frame nearly identical to the one before it is
+dropped, so a static shot is read once rather than sixty times. The comparison is fine
+enough that a new caption on an unchanged background always survives, because text
+overlays are often the only place a reel lists its ingredients.
 
 ---
 
@@ -137,10 +141,10 @@ easiest way to waste money here.
 |---|---|
 | Your computer | `.env` in the repository root. It is git-ignored and overrides `server/.env` |
 | Docker Compose | The same root `.env`, passed with `--env-file .env` as above |
-| Fly | `fly secrets set OPENAI_API_KEY=… APIFY_TOKEN=… SECRET_KEY=… OWNER_PASSWORD=…`, once for `-a onigiri` and once for `-a onigiri-worker` |
+| Fly | `fly secrets set ANTHROPIC_API_KEY=… APIFY_TOKEN=… SECRET_KEY=… OWNER_PASSWORD=…`, once for `-a onigiri` and once for `-a onigiri-worker` |
 
 Generate a `SECRET_KEY` with `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
-The test suite blanks both API keys, so running the tests never spends money.
+The test suite blanks every API key, so running the tests never spends money.
 
 ## Layout
 
@@ -155,7 +159,7 @@ server/            FastAPI app, worker and pipeline
     routers/         auth, ingest, recipes, library, profile, media
     services/        llm, search, scaling, storage, memory, jobs
   alembic/         migrations
-  tests/           131 tests
+  tests/           148 tests
 web/               React PWA
   src/routes/        library, add, job, recipe, edit, cook, profile, settings
   src/sw.ts          service worker, including the share target
@@ -165,7 +169,7 @@ infra/             Dockerfile, compose, Fly configs
 ## Tests
 
 ```bash
-cd server && .venv/bin/pytest          # 131 tests
+cd server && .venv/bin/pytest          # 148 tests
 cd web && pnpm test && pnpm build
 ```
 
@@ -177,8 +181,15 @@ collections, scaling, the cook log and export.
 ## Notes on cost and privacy
 
 Captures are metered: every job records the tokens and audio seconds it used, and Settings
-totals the last thirty days. For roughly forty captures a month the running cost is about
-15 to 40 USD including hosting.
+totals the last thirty days. Measured on Claude Opus 5.5 at medium effort:
+
+| Capture | Tokens in / out | Cost |
+|---|---|---|
+| Pasted caption | about 3,100 / 650 | about 3 US cents |
+| Cookbook page or handwritten card | about 6,500 / 1,500 | about 6 US cents |
+| Reel read from on-screen text | about 6,900 / 900 | about 5 US cents |
+
+Forty captures a month is a few dollars of Claude usage; hosting is the larger cost.
 
 This is a personal tool for a single person. Recipes keep a link to their source and are
 never published. Nothing is shared with anyone.

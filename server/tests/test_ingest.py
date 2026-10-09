@@ -227,9 +227,24 @@ async def test_extraction_without_an_api_key_fails_clearly(client: AsyncClient) 
     """No stub here: the real client is missing its key."""
     job = await run_capture(client, text=RECIPE_TEXT)
     assert job["status"] == "failed"
-    assert "OPENAI_API_KEY" in job["error"]
+    assert "ANTHROPIC_API_KEY" in job["error"]
 
 
 @pytest.mark.parametrize("path", ["/api/recipes", "/api/stats", "/api/me/profile"])
 async def test_endpoints_require_sign_in(app_client: AsyncClient, path: str) -> None:
     assert (await app_client.get(path)).status_code == 401
+
+
+async def test_a_note_alone_does_not_send_a_good_recipe_to_review(
+    client: AsyncClient, stub_llm
+) -> None:
+    """A confident recipe with a small gap is ready, and keeps the note."""
+    stub_llm["set_recipe"]["recipe"] = sample_extraction(
+        confidence=0.93,
+        missing=["when to add black pepper"],
+        review_reason="Black pepper is listed but never used in the method.",
+    )
+    job = await run_capture(client, text=RECIPE_TEXT)
+    detail = (await client.get(f"/api/recipes/{job['recipe_id']}")).json()
+    assert detail["status"] == "ready"
+    assert "black pepper" in detail["review_reason"]

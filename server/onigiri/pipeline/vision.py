@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from onigiri.config import settings
 from onigiri.pipeline.media import prepare_for_vision
 from onigiri.pipeline.prompts import PHOTO_SYSTEM
-from onigiri.recipe_schema import PHOTO_JSON_SCHEMA_NAME, ExtractedPhotoText
+from onigiri.recipe_schema import PHOTO_JSON_SCHEMA_NAME, WirePhotoText
 from onigiri.services import llm
 
 log = logging.getLogger(__name__)
@@ -66,12 +66,11 @@ async def read_photos(images: list[bytes], *, usage: llm.Usage | None = None) ->
     for data in images[:8]:
         content.append(llm.image_part(prepare_for_vision(data)))
 
-    result: ExtractedPhotoText = await llm.structured(
-        ExtractedPhotoText,
+    result: WirePhotoText = await llm.structured(
+        WirePhotoText,
         PHOTO_SYSTEM,
         content,
         schema_name=PHOTO_JSON_SCHEMA_NAME,
-        model=settings.openai_vision_model,
         usage=usage,
     )
     return PhotoReadResult(
@@ -124,14 +123,25 @@ async def read_keyframes(frames: list[bytes], *, usage: llm.Usage | None = None)
                 FRAME_SYSTEM,
                 content,
                 schema_name="frame_text",
-                model=settings.openai_vision_model,
+                effort=settings.anthropic_frame_effort,
                 usage=usage,
             )
         )
 
+    async def safe(coro):
+        try:
+            return await coro
+        except llm.LLMNotConfigured:
+            raise
+        except llm.LLMError as exc:
+            log.info("a batch of frames could not be read: %s", exc)
+            return None
+
     all_lines: list[str] = []
-    results = await llm.gather_limited(coros, limit=3)
-    for res in results:
-        if isinstance(res, FrameText):
-            all_lines.extend(res.lines)
+    results = await llm.gather_limited([safe(c) for c in coros], limit=3)
+    read = [res for res in results if isinstance(res, FrameText)]
+    if not read:
+        raise llm.LLMError("None of the video frames could be read.")
+    for res in read:
+        all_lines.extend(res.lines)
     return "\n".join(_dedupe_lines(all_lines))

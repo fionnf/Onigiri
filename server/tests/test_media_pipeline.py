@@ -183,3 +183,40 @@ async def test_non_media_upload_is_rejected(client: AsyncClient) -> None:
         "/api/ingest/upload", files={"files": ("notes.txt", b"hello", "text/plain")}
     )
     assert resp.status_code == 415
+
+
+@needs_ffmpeg
+async def test_every_new_caption_survives_deduplication(tmp_path: Path) -> None:
+    """Text-overlay reels change only the caption; each caption must be read."""
+    import subprocess
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    font = ImageFont.load_default(size=40)
+    captions = ["SHAKSHUKA", "1 onion + 1 pepper", "400 g tomatoes", "4 eggs", "feta + parsley"]
+    for n, caption in enumerate(captions):
+        img = Image.new("RGB", (720, 1280), (58, 42, 30))
+        ImageDraw.Draw(img).text((120, 600), caption, font=font, fill="white")
+        img.save(tmp_path / f"c{n}.png")
+    clip = tmp_path / "captions.mp4"
+    subprocess.run(  # noqa: ASYNC221 - a one-off fixture build, not hot-path work
+        [
+            "ffmpeg",
+            "-y",
+            "-framerate",
+            "1/3",
+            "-i",
+            str(tmp_path / "c%d.png"),
+            "-r",
+            "24",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(clip),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    frames = await mediautil.extract_keyframes(clip, tmp_path / "frames", interval_s=1.0)
+    assert len(frames) == len(captions)

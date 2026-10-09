@@ -95,7 +95,7 @@ async def _vector_ids(
     db: AsyncSession, user_id: uuid.UUID, q: str, f: SearchFilters
 ) -> list[uuid.UUID]:
     try:
-        vector = await llm.embed(q)
+        vector = await llm.embed(q, fast=True)
     except llm.LLMError as exc:
         log.debug("semantic search unavailable: %s", exc)
         return []

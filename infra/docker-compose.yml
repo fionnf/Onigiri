@@ -62,6 +62,7 @@ services:
       JOB_BACKEND: arq
       OWNER_EMAIL: ${OWNER_EMAIL:-you@example.com}
       OWNER_PASSWORD: ${OWNER_PASSWORD:-changeme}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       APIFY_TOKEN: ${APIFY_TOKEN:-}
       S3_ENDPOINT_URL: http://minio:9000

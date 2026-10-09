@@ -1,8 +1,9 @@
 """ffmpeg work: probing, audio extraction, keyframe sampling, thumbnails.
 
-Keyframes are deduplicated with a difference hash before they reach the vision model.
-A talking-head reel is mostly the same frame, and paying to read the same frame sixty
-times is the easiest cost mistake to make here.
+Repeated keyframes are dropped before they reach the vision model, because a static
+shot read sixty times costs sixty times as much. A frame is dropped only when it is
+nearly identical to the frame kept just before it, so a new caption on an unchanged
+background always survives.
 """
 
 from __future__ import annotations
@@ -137,32 +138,31 @@ async def split_audio(audio: Path, chunk_seconds: int, out_dir: Path) -> list[Pa
     return chunks or [audio]
 
 
-def _dhash_file(path: Path, size: int = 8) -> int | None:
-    """Difference hash of a frame on disk. Runs in a worker thread."""
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return None
-    return _dhash(data, size) if data else None
+SIGNATURE_WIDTH = 128
+# A pixel counts as changed when its grey level moves by more than this. Sensor grain
+# and compression noise stay under it; text appearing or disappearing does not.
+PIXEL_CHANGE = 25
+# A frame is new when at least this share of its pixels changed since the last kept
+# frame. Measured on 720x1280 clips: a single 40 px caption line swapping changes
+# 0.4 to 0.5 percent, a grainy static shot changes none.
+MIN_CHANGED_SHARE = 0.001
 
 
-def _dhash(data: bytes, size: int = 8) -> int:
-    """Difference hash: cheap perceptual fingerprint for near-duplicate frames."""
+def _signature(path: Path):  # returns a numpy array
+    """A small greyscale copy of a frame, aspect kept, for telling new frames from repeats."""
+    import numpy as np
     from PIL import Image
 
-    with Image.open(io.BytesIO(data)) as img:
-        img = img.convert("L").resize((size + 1, size), Image.Resampling.LANCZOS)
-        pixels = list(img.getdata())
-    bits = 0
-    for row in range(size):
-        base = row * (size + 1)
-        for col in range(size):
-            bits = (bits << 1) | int(pixels[base + col] < pixels[base + col + 1])
-    return bits
+    with Image.open(path) as img:
+        height = max(1, round(img.height * SIGNATURE_WIDTH / img.width))
+        small = img.convert("L").resize((SIGNATURE_WIDTH, height), Image.Resampling.BOX)
+        return np.asarray(small, dtype=np.int16)
 
 
-def _hamming(a: int, b: int) -> int:
-    return bin(a ^ b).count("1")
+def changed_share(a, b) -> float:  # numpy arrays from _signature
+    import numpy as np
+
+    return float((np.abs(a - b) > PIXEL_CHANGE).mean())
 
 
 @dataclass
@@ -178,7 +178,7 @@ async def extract_keyframes(
     *,
     interval_s: float | None = None,
     max_frames: int | None = None,
-    dedup_threshold: int = 8,
+    min_changed_share: float = MIN_CHANGED_SHARE,
 ) -> list[Keyframe]:
     if not ffmpeg_available():
         raise MediaToolMissing("ffmpeg is not installed on this machine.")
@@ -206,19 +206,18 @@ async def extract_keyframes(
 
     frames = sorted(await asyncio.to_thread(lambda: list(out_dir.glob("frame_*.jpg"))))
     kept: list[Keyframe] = []
-    hashes: list[int] = []
+    last = None
     for i, frame in enumerate(frames):
-        data = frame.read_bytes()
-        if not data:
-            continue
         try:
-            h = await asyncio.to_thread(_dhash, data)
-        except Exception:
+            signature = await asyncio.to_thread(_signature, frame)
+        except Exception:  # a corrupt frame should not stop the job
             continue
-        if any(_hamming(h, prev) <= dedup_threshold for prev in hashes):
-            frame.unlink(missing_ok=True)
+        # Compare with the last kept frame only. Comparing with every kept frame
+        # threw away new captions that merely looked like an earlier one.
+        if last is not None and changed_share(signature, last) < min_changed_share:
+            await asyncio.to_thread(frame.unlink, missing_ok=True)
             continue
-        hashes.append(h)
+        last = signature
         kept.append(Keyframe(index=len(kept), timestamp=round(i * interval_s, 1), path=frame))
         if len(kept) >= max_frames:
             break
